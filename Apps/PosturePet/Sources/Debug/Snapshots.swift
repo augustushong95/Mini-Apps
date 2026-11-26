@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import MenuBarKit
 
 /// Renders galleries of Mochi and the UI to PNGs in the debug folder, so the
 /// visuals can be reviewed without screen capture.
@@ -13,6 +14,65 @@ enum Snapshots {
         renderMenuBarIcons()
         renderUI()
         renderSimulatedAirPods()
+        renderActs()
+    }
+
+    // MARK: Acts contact sheet
+
+    /// Every act at its key moment, labelled, on light and dark backgrounds.
+    private static func renderActs() {
+        let acts = PetAct.allCases
+        let columns = 8
+        let cell = CGSize(width: 150, height: 170)
+        let rows = Int((Double(acts.count) / Double(columns)).rounded(.up))
+        for (dark, name) in [(false, "acts-light.png"), (true, "acts-dark.png")] {
+            let size = CGSize(width: cell.width * CGFloat(columns), height: cell.height * CGFloat(rows))
+            let scale: CGFloat = 2
+            guard let context = CGContext(
+                data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { continue }
+            context.scaleBy(x: scale, y: scale)
+            context.setFillColor((dark ? NSColor(hex: 0x24262B) : NSColor(hex: 0xFFF6EA)).cgColor)
+            context.fill(CGRect(origin: .zero, size: size))
+
+            for (index, act) in acts.enumerated() {
+                let column = index % columns
+                let row = index / columns
+                let origin = CGPoint(x: CGFloat(column) * cell.width, y: size.height - CGFloat(row + 1) * cell.height)
+                let mood: PetMood = switch act {
+                case .nodOff, .sleepBubble, .snore, .sleepSmile: .sleepy
+                case .shiver, .sneeze, .cough, .sniffle: .sick
+                case .melt, .leafFlutter, .deepSigh, .trySitUp: .slumped
+                case .sigh, .stretchFlop, .slowRock, .fidget, .lookAtYou: .tired
+                default: .happy
+                }
+                let view = PetLayerView(frame: NSRect(x: 0, y: 0, width: 140, height: 140))
+                view.idleAnimationsEnabled = false
+                view.apply(mood.pose(stage: .sprout, posture: nil), animated: false)
+                view.debugStill(act)
+                context.saveGState()
+                context.translateBy(x: origin.x + 5, y: origin.y + 26)
+                view.layer?.render(in: context)
+                context.restoreGState()
+
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                let label = NSAttributedString(string: act.rawValue, attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+                    .foregroundColor: dark ? NSColor.white : NSColor(hex: 0x3B2A26),
+                ])
+                let width = label.size().width
+                label.draw(at: CGPoint(x: origin.x + (cell.width - width) / 2, y: origin.y + 8))
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            if let image = context.makeImage(),
+               let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                DebugFiles.write(png, to: name)
+            }
+        }
     }
 
     // MARK: Simulated AirPods sequence
@@ -263,9 +323,9 @@ enum Snapshots {
         preferences.windDownMinutes = 3 * 60 + 59
         let engine = PetEngine(settings: preferences, motion: MotionHub(streamingEnabled: false), store: store, quietSignals: { nil }, idleSeconds: { 0 })
         engine.debugAddSitting(minutes: 27)
-        let pro = ProStore()
+        let pro = ProStore(productID: ProductIDs.pro)
         let router = PanelRouter()
-        let actions = PanelActions(play: { _ in }, snooze: {}, tookBreak: {}, recenter: {}, quit: {})
+        let actions = PanelActions(play: { _ in }, playSuggested: {}, snooze: {}, tookBreak: {}, recenter: {}, quit: {})
         let panel = PanelRootView(engine: engine, pro: pro, router: router, actions: actions)
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
@@ -284,7 +344,7 @@ enum Snapshots {
         render(panel, size: PanelRootView.size, name: "panel-home-due.png", appearance: .aqua)
 
         for kind in [NudgeKind.breakInvite, .posture, .windDown] {
-            let bubble = BubbleView(nudge: Nudge(kind: kind, petName: "Mochi"), pose: engine.pose, tail: .top) { _ in }
+            let bubble = BubbleView(nudge: Nudge(kind: kind), pose: engine.pose, tail: .top) { _ in }
                 .padding(14)
             render(bubble, size: NSSize(width: 310, height: 160), name: "bubble-\(kind.rawValue).png", appearance: .aqua)
         }

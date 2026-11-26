@@ -29,10 +29,26 @@ nonisolated struct PetPose: Equatable, Sendable {
         case happy
         /// Downturned arcs, asleep.
         case closed
+        /// One "^" and one round eye.
+        case wink
+        /// Sparkly star eyes, for big wins.
+        case star
+        /// Swirls, after spinning around.
+        case dizzy
+        /// Big round eyes, surprised or attentive.
+        case wide
     }
 
     enum MouthStyle: Sendable {
         case smile, grin, flat, frown, wobble, oh
+        /// A cat-like "ω".
+        case cat
+        /// A smile with the tongue poking out.
+        case tongue
+        /// A big tall "O".
+        case yawn
+        /// A small round kiss-shaped mouth.
+        case pout
     }
 
     enum Accessory: Sendable, Hashable {

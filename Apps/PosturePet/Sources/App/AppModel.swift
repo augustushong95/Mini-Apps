@@ -12,10 +12,10 @@ final class AppModel {
     let preferences: Preferences
     let motion = MotionHub()
     let engine: PetEngine
-    let pro = ProStore()
+    let pro = ProStore(productID: ProductIDs.pro)
     let router = PanelRouter()
 
-    private let statusItem = StatusItemController()
+    private let statusItem = StatusItemController(autosaveName: "PosturePet", placeholderSymbol: "leaf.fill")
     private let bubbles = BubbleController()
     private let desktopPet: DesktopPetController
     private lazy var panel = makePanel()
@@ -23,6 +23,10 @@ final class AppModel {
     private var onboarding: OnboardingController?
     private var observers: [NSObjectProtocol] = []
     private var lastReaction: PetReaction?
+    /// The menu bar icon's occasional blink or glance.
+    private var iconLifeTimer: Timer?
+    private var iconMoment: PetPose?
+    private var bubbleLines = PetLines.Rotator()
 
     #if DEBUG
     private lazy var debug = DebugTools(model: self)
@@ -73,14 +77,17 @@ final class AppModel {
     private func wire() {
         statusItem.onPrimaryClick = { [unowned self] in togglePanel(from: .menuBar) }
         statusItem.menuProvider = { [unowned self] in makeMenu() }
-        desktopPet.onClick = { [unowned self] in togglePanel(from: .desktop) }
+        desktopPet.onClick = { [unowned self] in
+            engine.react(to: .tapped)
+            togglePanel(from: .desktop)
+        }
         desktopPet.menuProvider = { [unowned self] in makeMenu() }
 
         engine.onPoseChange = { [unowned self] pose, due in
-            let label = "\(AppInfo.name): \(engine.pet.name) is \(engine.mood.title.lowercased())"
-            statusItem.setImage(MenuBarIconRenderer.image(for: pose, badge: due), accessibilityLabel: label)
-            desktopPet.apply(pose)
+            updateIcon()
+            desktopPet.apply(pose, mood: engine.mood)
         }
+        scheduleIconLife()
         engine.onNudge = { [unowned self] kind in showBubble(kind) }
         engine.publishPose()
 
@@ -99,6 +106,43 @@ final class AppModel {
 
         observeChanges { [weak self] in self?.updateDesktopPet() }
         observeChanges { [weak self] in self?.forwardReaction() }
+    }
+
+    // MARK: Menu bar icon
+
+    private func updateIcon() {
+        let pose = iconMoment ?? engine.pose
+        let label = "\(AppInfo.name): \(engine.pet.name) is \(engine.mood.title.lowercased())"
+        statusItem.setImage(MenuBarIconRenderer.image(for: pose, badge: engine.breaks.phase != .sitting), accessibilityLabel: label)
+    }
+
+    /// Every 20–40 s the menu bar Mochi blinks or glances to one side. Just a
+    /// cached image swap, so it costs nothing.
+    private func scheduleIconLife() {
+        iconLifeTimer?.invalidate()
+        let timer = Timer(timeInterval: .random(in: 20...40), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                defer { self.scheduleIconLife() }
+                guard self.engine.pose.eyes == .open, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+                var moment = self.engine.pose
+                let glance = Bool.random()
+                if glance {
+                    moment.gaze = CGVector(dx: Bool.random() ? 1 : -1, dy: 0)
+                } else {
+                    moment.eyes = .closed
+                }
+                self.iconMoment = moment
+                self.updateIcon()
+                DispatchQueue.main.asyncAfter(deadline: .now() + (glance ? 0.9 : 0.16)) { [weak self] in
+                    self?.iconMoment = nil
+                    self?.updateIcon()
+                }
+            }
+        }
+        timer.tolerance = 3
+        RunLoop.main.add(timer, forMode: .common)
+        iconLifeTimer = timer
     }
 
     /// Re-runs `body` whenever anything it read from an `@Observable` changes.
@@ -136,6 +180,7 @@ final class AppModel {
     private func makePanel() -> PanelController {
         let actions = PanelActions(
             play: { [unowned self] game in play(game) },
+            playSuggested: { [unowned self] in play(suggestedGame()) },
             snooze: { [unowned self] in engine.snoozeBreak() },
             tookBreak: { [unowned self] in engine.recordBreak(.manual) },
             recenter: { [unowned self] in recenter() },
@@ -206,14 +251,14 @@ final class AppModel {
 
     func showBubble(_ kind: NudgeKind) {
         guard arcade == nil, onboarding == nil, !panel.isVisible else { return }
-        let nudge = Nudge(kind: kind, petName: engine.pet.name)
+        let nudge = Nudge(kind: kind, title: bubbleLines.next(from: PetLines.bubbleTitles(for: kind)))
         if desktopPet.isVisible {
             bubbles.show(nudge, pose: engine.pose, anchor: desktopPet.petFrame, fromMenuBar: false)
         } else {
             bubbles.show(nudge, pose: engine.pose, anchor: statusItem.screenFrame ?? PanelPlacement.fallbackAnchor(), fromMenuBar: true)
         }
         if kind == .breakInvite {
-            engine.pet(react: .wobble)
+            engine.react(to: .breakDue)
         }
     }
 
@@ -268,7 +313,7 @@ final class AppModel {
             engine.recordBreak(.game)
         }
         engine.recordScore(result.score, for: game.rawValue)
-        engine.pet(react: .celebrate)
+        engine.react(to: .celebrate)
     }
 
     // MARK: Onboarding
@@ -283,7 +328,7 @@ final class AppModel {
             onboarding = nil
             updateBusy()
             updateDesktopPet()
-            engine.pet(react: .celebrate)
+            engine.react(to: .celebrate)
         }
         onboarding = controller
         updateBusy()
@@ -316,6 +361,7 @@ final class AppModel {
         let name = engine.pet.name
 
         let header = NSMenuItem(title: "\(name) is \(engine.mood.title.lowercased())", action: nil, keyEquivalent: "")
+        header.image = NSImage(systemSymbolName: engine.mood.symbol, accessibilityDescription: nil)
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -325,7 +371,7 @@ final class AppModel {
         menu.addItem(.separator())
 
         if case .manual = engine.quiet.reason {
-            menu.addItem(ClosureMenuItem("Resume Nudges") { [unowned self] in engine.setQuiet(until: nil) })
+            menu.addItem(ClosureMenuItem("End Quiet") { [unowned self] in engine.setQuiet(until: nil) })
         } else {
             menu.addItem(ClosureMenuItem("Quiet for 1 Hour") { [unowned self] in
                 engine.setQuiet(until: .now.addingTimeInterval(3600))
@@ -335,7 +381,7 @@ final class AppModel {
             })
         }
         if preferences.desktopPetEnabled {
-            menu.addItem(ClosureMenuItem("Send \(name) Home") { [unowned self] in
+            menu.addItem(ClosureMenuItem("Hide from Desktop") { [unowned self] in
                 preferences.desktopPetEnabled = false
             })
         } else {

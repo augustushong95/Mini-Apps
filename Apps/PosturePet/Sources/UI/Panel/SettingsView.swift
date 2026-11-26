@@ -11,18 +11,20 @@ struct SettingsView: View {
 
     @State private var name = ""
     @State private var confirmingReset = false
+    @State private var showsMore = false
 
     private var settings: Preferences { engine.settings }
+
+    private var motionDenied: Bool {
+        engine.motion.authorization == .denied || engine.motion.authorization == .restricted
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                Text("Settings")
-                    .font(.petTitle)
-
-                SettingsSection("Breaks") {
-                    SettingsRow("timer", "Remind me every") {
-                        Picker("Remind me every", selection: Binding(
+                VStack(spacing: 0) {
+                    SettingsRow("timer", "Break every") {
+                        Picker("Break every", selection: Binding(
                             get: { settings.breakMinutes },
                             set: { settings.breakMinutes = $0; engine.tick() }
                         )) {
@@ -39,38 +41,6 @@ struct SettingsView: View {
                             .datePickerStyle(.field)
                             .fixedSize()
                     }
-                }
-
-                SettingsSection("Posture") {
-                    airPodsRow
-                    SettingsRow("dial.medium", "Sensitivity") {
-                        Picker("Sensitivity", selection: Binding(
-                            get: { settings.sensitivity },
-                            set: { settings.sensitivity = $0; engine.applySensitivity() }
-                        )) {
-                            ForEach(PostureSensitivity.allCases, id: \.self) { level in
-                                Text(level.title).tag(level)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .controlSize(.small)
-                        .fixedSize()
-                    }
-                    SettingsRow("scope", "Sitting position") {
-                        Button(engine.hasAnyBaseline ? "Re-centre" : "Calibrate", action: actions.recenter)
-                            .buttonStyle(.pill(.soft))
-                            .disabled(!engine.motion.isSupported)
-                    }
-                }
-
-                SettingsSection(engine.pet.name) {
-                    SettingsRow("character.cursor.ibeam", "Name") {
-                        TextField("Name", text: $name)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 130)
-                            .onSubmit { engine.rename(to: name) }
-                    }
                     SettingsRow("macwindow.on.rectangle", "Show on desktop") {
                         Toggle("Show on desktop", isOn: Binding(
                             get: { settings.desktopPetEnabled },
@@ -79,68 +49,47 @@ struct SettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.petSwitch)
                     }
-                    SettingsRow("eye.slash", "Hide during calls") {
-                        Toggle("Hide during calls", isOn: Binding(
-                            get: { settings.hideDesktopPetWhenQuiet },
-                            set: { settings.hideDesktopPetWhenQuiet = $0 }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.petSwitch)
-                        .disabled(!settings.desktopPetEnabled)
-                    }
-                    SettingsRow("speaker.wave.2.fill", "Game sounds") {
-                        Toggle("Game sounds", isOn: Binding(
-                            get: { settings.soundsEnabled },
-                            set: { settings.soundsEnabled = $0 }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.petSwitch)
-                    }
-                }
-
-                SettingsSection("General") {
                     SettingsRow("power", "Launch at login") {
                         LaunchAtLoginToggle()
                             .labelsHidden()
                             .toggleStyle(.petSwitch)
                     }
-                    SettingsRow("bell.slash.fill", "Quiet") {
-                        if let until = settings.quietUntil, until > .now {
-                            Button("Resume") { engine.setQuiet(until: nil) }
-                                .buttonStyle(.pill(.soft, tint: Color(Palette.lavender)))
-                        } else {
-                            Button("For 1 hour") { engine.setQuiet(until: .now.addingTimeInterval(3600)) }
-                                .buttonStyle(.pill(.soft, tint: Color(Palette.lavender)))
-                        }
+                    SettingsRow("scope", "Re-centre") {
+                        Button(engine.hasAnyBaseline ? "Re-centre" : "Set up", action: actions.recenter)
+                            .buttonStyle(.pill(.soft))
+                            .disabled(!engine.motion.isSupported || motionDenied)
                     }
-                    SettingsRow("crown.fill", pro.isPro ? "Pro unlocked" : "Posture Pet Pro") {
-                        if pro.isPro {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(Theme.accent)
-                        } else {
-                            HStack(spacing: 6) {
-                                Button("Restore") { Task { await pro.restore() } }
-                                    .buttonStyle(.pill(.plain))
-                                Button("Unlock") {
-                                    withAnimation(Theme.Motion.quick) { router.showsPaywall = true }
-                                }
+                    .help("Sit the way you normally sit well, so \(engine.pet.name) can mirror you")
+                    if motionDenied {
+                        SettingsRow("airpods", "Motion access is off", tint: Color(Palette.coral)) {
+                            Button("Open Settings", action: openMotionPrivacy)
                                 .buttonStyle(.pill(.soft, tint: Color(Palette.coral)))
-                            }
                         }
                     }
                 }
+                .card(padding: 4)
 
-                privacyNote
-
-                HStack {
-                    Button("Reset all data…", role: .destructive) { confirmingReset = true }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color(Palette.coral))
-                    Spacer()
-                    Button("Quit \(AppInfo.name)", action: actions.quit)
-                        .buttonStyle(.pill(.plain))
+                Button {
+                    withAnimation(Theme.Motion.quick) { showsMore.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("More")
+                            .font(.rounded(12, .semibold))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .rotationEffect(.degrees(showsMore ? 90 : 0))
+                        Spacer()
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
                 }
-                .font(.petCaption)
+                .buttonStyle(PressableStyle())
+                .accessibilityLabel(showsMore ? "Hide more settings" : "Show more settings")
+
+                if showsMore {
+                    more
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
             .padding(14)
         }
@@ -150,44 +99,74 @@ struct SettingsView: View {
         .confirmationDialog("Reset all of \(engine.pet.name)'s data?", isPresented: $confirmingReset) {
             Button("Reset", role: .destructive, action: resetEverything)
         } message: {
-            Text("This clears history, growth, treats and calibration. It can't be undone.")
+            Text("This clears history, growth, dewdrops and calibration. It can't be undone.")
         }
     }
 
-    // MARK: Rows
-
-    private var airPodsRow: some View {
-        let motion = engine.motion
-        let (title, tint): (String, Color) = {
-            if !motion.isSupported { return ("Not supported on this Mac", .secondary) }
-            switch motion.authorization {
-            case .denied, .restricted: return ("Motion access is off", Color(Palette.coral))
-            default: break
+    /// Everything people rarely change.
+    private var more: some View {
+        VStack(spacing: 0) {
+            SettingsRow("dial.medium", "Sensitivity") {
+                Picker("Sensitivity", selection: Binding(
+                    get: { settings.sensitivity },
+                    set: { settings.sensitivity = $0; engine.applySensitivity() }
+                )) {
+                    ForEach(PostureSensitivity.allCases, id: \.self) { level in
+                        Text(level.title).tag(level)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
             }
-            switch motion.connection {
-            case .connected: return ("AirPods connected", Theme.accent)
-            case .disconnected: return ("AirPods not connected", .secondary)
-            case .unknown: return ("Waiting for AirPods", .secondary)
+            .help("How far your head must drop, and for how long, before it counts as slumping")
+            SettingsRow("eye.slash", "Hide when busy") {
+                Toggle("Hide when busy", isOn: Binding(
+                    get: { settings.hideDesktopPetWhenQuiet },
+                    set: { settings.hideDesktopPetWhenQuiet = $0 }
+                ))
+                .labelsHidden()
+                .toggleStyle(.petSwitch)
+                .disabled(!settings.desktopPetEnabled)
             }
-        }()
-        return SettingsRow("airpods", title, tint: tint) {
-            if motion.authorization == .denied || motion.authorization == .restricted {
-                Button("Open Settings") { openMotionPrivacy() }
-                    .buttonStyle(.pill(.soft, tint: Color(Palette.coral)))
+            .help("Hide the desktop \(engine.pet.name) during calls, full-screen apps and Quiet")
+            SettingsRow("speaker.wave.2.fill", "Game sounds") {
+                Toggle("Game sounds", isOn: Binding(
+                    get: { settings.soundsEnabled },
+                    set: { settings.soundsEnabled = $0 }
+                ))
+                .labelsHidden()
+                .toggleStyle(.petSwitch)
+            }
+            SettingsRow("character.cursor.ibeam", "Name") {
+                TextField("Name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                    .onSubmit { engine.rename(to: name) }
+            }
+            SettingsRow("crown.fill", "Pro") {
+                if pro.isPro {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Theme.accent)
+                        .help("Pro is unlocked")
+                } else {
+                    HStack(spacing: 6) {
+                        Button("Restore") { Task { await pro.restore() } }
+                            .buttonStyle(.pill(.plain))
+                        Button("Unlock") {
+                            withAnimation(Theme.Motion.quick) { router.showsPaywall = true }
+                        }
+                        .buttonStyle(.pill(.soft, tint: Color(Palette.coral)))
+                    }
+                }
+            }
+            SettingsRow("arrow.counterclockwise", "Reset all data", tint: Color(Palette.coral)) {
+                Button("Reset…") { confirmingReset = true }
+                    .buttonStyle(.pill(.plain))
             }
         }
-    }
-
-    private var privacyNote: some View {
-        Label {
-            Text("Head movement is read on this Mac and never saved or sent anywhere. No account, no tracking.")
-                .font(.rounded(11))
-                .foregroundStyle(.secondary)
-        } icon: {
-            Image(systemName: "lock.shield.fill")
-                .foregroundStyle(Theme.accent)
-        }
-        .padding(.horizontal, 4)
+        .card(padding: 4)
     }
 
     private var windDownBinding: Binding<Date> {

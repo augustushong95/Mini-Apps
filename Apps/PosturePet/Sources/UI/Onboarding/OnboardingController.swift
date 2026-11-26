@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import MenuBarKit
 
 /// First-run setup (or just re-centring posture) in a centred window.
 final class OnboardingController {

@@ -1,4 +1,5 @@
 import AppKit
+import MenuBarKit
 
 /// Mochi on the desktop: a small transparent panel the user can drag
 /// anywhere, on any display. Its position is remembered per screen setup
@@ -55,12 +56,13 @@ final class DesktopPetController {
         panel.frame.insetBy(dx: 14, dy: 10)
     }
 
-    func apply(_ pose: PetPose) {
+    func apply(_ pose: PetPose, mood: PetMood) {
+        petView.mood = mood
         petView.basePose = pose
     }
 
     func react(_ reaction: PetReaction) {
-        petView.react(reaction)
+        petView.perform(reaction.act)
     }
 
     func setVisible(_ visible: Bool, animated: Bool = true) {
@@ -72,7 +74,7 @@ final class DesktopPetController {
                 context.duration = 0.25
                 panel.animator().alphaValue = 1
             }
-            petView.react(PetReaction(kind: .hop))
+            petView.perform(.happyLand)
         } else if !visible, panel.isVisible {
             panel.dismiss(animated: animated)
         }
@@ -129,9 +131,7 @@ final class DesktopPetController {
         }
         let saved = preferences.desktopPetOrigin(for: DisplayArrangement.current())
         preferences.setDesktopPetOrigin(target, for: DisplayArrangement.current())
-        if saved != target {
-            petView.react(PetReaction(kind: .hop))
-        }
+        petView.land(moved: saved != target)
     }
 }
 
@@ -150,7 +150,15 @@ final class DesktopPetView: NSView {
         didSet { updatePose() }
     }
 
+    var mood: PetMood {
+        get { pet.mood }
+        set { pet.mood = newValue }
+    }
+
     private let pet: PetLayerView
+    /// Landings are local to the desktop pet, so they get their own director.
+    private var landings = BehaviorDirector()
+    private var heldWhileDragging = false
     private var mouseDownLocation: NSPoint?
     private var isDragging = false
     private var hoverGaze: CGVector?
@@ -182,12 +190,20 @@ final class DesktopPetView: NSView {
         ))
     }
 
-    func react(_ reaction: PetReaction) {
-        switch reaction.kind {
-        case .hop: pet.hop()
-        case .celebrate: pet.celebrate()
-        case .wobble: pet.wobble()
-        case .chew: pet.chew()
+    func perform(_ act: PetAct) {
+        pet.perform(act)
+    }
+
+    /// After a drag: lets go of the "wheee" face and, if Mochi actually
+    /// moved, lands with one of several landings.
+    func land(moved: Bool) {
+        guard heldWhileDragging else { return }
+        heldWhileDragging = false
+        pet.hold(nil)
+        guard moved else { return }
+        landings.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let act = landings.pick(.dropped, now: Date.now.timeIntervalSinceReferenceDate) {
+            pet.perform(act)
         }
     }
 
@@ -213,6 +229,8 @@ final class DesktopPetView: NSView {
         let location = event.locationInWindow
         if hypot(location.x - start.x, location.y - start.y) > 3 {
             isDragging = true
+            heldWhileDragging = true
+            pet.hold(PetFace(eyes: .wide, mouth: .oh))
             // The system moves the window, smoothly and across displays.
             window?.performDrag(with: event)
             isDragging = false
@@ -224,7 +242,6 @@ final class DesktopPetView: NSView {
     override func mouseUp(with event: NSEvent) {
         defer { mouseDownLocation = nil }
         guard mouseDownLocation != nil, !isDragging else { return }
-        pet.hop(height: 0.08)
         onClick?()
     }
 

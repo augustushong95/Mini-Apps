@@ -1,4 +1,5 @@
 import SwiftUI
+import MenuBarKit
 
 /// The Pro offer, shown inside the panel. Only ever opened by the user
 /// tapping something locked; there are no pop-up paywalls.
@@ -42,15 +43,15 @@ struct PaywallView: View {
                 VStack(spacing: 4) {
                     Text("Posture Pet Pro")
                         .font(.petTitle)
-                    Text("One purchase. Yours for good.")
+                    Text("One-time purchase")
                         .font(.petBody)
                         .foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    perk("gamecontroller.fill", "Puddle Hop and Star Float", "Two more neck games: nods and looking up", Color(Palette.sky))
-                    perk("chart.bar.xaxis", "Your whole history", "Every day, not just this week", Color(Palette.accent))
-                    perk("sparkles", "Future pets and goodies", "Included as they arrive", Color(Palette.sun))
+                    perk("gamecontroller.fill", "Puddle Hop and Star Float", Color(Palette.sky))
+                    perk("chart.bar.xaxis", "30-day history", Color(Palette.accent))
+                    perk("sparkles", "Future pets and goodies", Color(Palette.sun))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .card()
@@ -96,23 +97,21 @@ struct PaywallView: View {
         }
         .onChange(of: pro.isPro) { _, isPro in
             if isPro {
-                engine.pet(react: .celebrate)
+                engine.react(to: .celebrate)
                 close()
             }
         }
     }
 
-    private func perk(_ symbol: String, _ title: String, _ detail: String, _ tint: Color) -> some View {
+    private func perk(_ symbol: String, _ title: String, _ tint: Color) -> some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(tint)
                 .frame(width: 26, height: 26)
                 .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.rounded(12, .semibold))
-                Text(detail).font(.rounded(11)).foregroundStyle(.secondary)
-            }
+            Text(title).font(.rounded(13, .semibold))
         }
     }
+
 }

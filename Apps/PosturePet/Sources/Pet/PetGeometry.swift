@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 
 /// Where every part of Mochi goes for a pose, in a square canvas of side
@@ -163,19 +164,77 @@ nonisolated enum PetGeometry {
     }
 
     /// A stroked arc for `.happy` (^) or `.closed` (◡) eyes.
-    static func eyeArc(_ style: PetPose.EyeStyle, size: CGSize) -> CGPath {
+    /// How each eye (viewer's left, then right) is drawn for a style.
+    enum EyeShape: Equatable, Sendable {
+        /// A filled oval, scaled (1 is normal, more is wide-eyed).
+        case round(scale: CGFloat)
+        case happyArc, closedArc
+        case star
+        case spiral
+
+        /// Drawn as a stroke (arcs and spirals) rather than a fill.
+        var isStroked: Bool {
+            switch self {
+            case .happyArc, .closedArc, .spiral: true
+            case .round, .star: false
+            }
+        }
+    }
+
+    static func eyeShapes(for style: PetPose.EyeStyle) -> [EyeShape] {
+        switch style {
+        case .open: [.round(scale: 1), .round(scale: 1)]
+        case .wide: [.round(scale: 1.28), .round(scale: 1.28)]
+        case .happy: [.happyArc, .happyArc]
+        case .closed: [.closedArc, .closedArc]
+        case .wink: [.happyArc, .round(scale: 1)]
+        case .star: [.star, .star]
+        case .dizzy: [.spiral, .spiral]
+        }
+    }
+
+    /// The stroke path for an arc or spiral eye (local, centred).
+    static func eyeStroke(_ shape: EyeShape, size: CGSize) -> CGPath {
         let path = CGMutablePath()
         let w = size.width
         let h = size.height
-        switch style {
-        case .happy:
+        switch shape {
+        case .happyArc:
             path.move(to: CGPoint(x: -w * 0.72, y: -h * 0.14))
             path.addQuadCurve(to: CGPoint(x: w * 0.72, y: -h * 0.14), control: CGPoint(x: 0, y: h * 0.52))
-        case .closed, .open:
+        case .closedArc, .round, .star:
             path.move(to: CGPoint(x: -w * 0.78, y: h * 0.06))
             path.addQuadCurve(to: CGPoint(x: w * 0.78, y: h * 0.06), control: CGPoint(x: 0, y: -h * 0.46))
+        case .spiral:
+            // Two turns, growing outward.
+            let turns = 2.0
+            let steps = 28
+            for step in 0...steps {
+                let t = Double(step) / Double(steps)
+                let angle = t * turns * 2 * .pi
+                let radius = w * 0.62 * t
+                let point = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+                step == 0 ? path.move(to: point) : path.addLine(to: point)
+            }
         }
         return path
+    }
+
+    /// The fill path for a round or star eye (local, centred).
+    static func eyeFill(_ shape: EyeShape, size: CGSize, openness: Double) -> CGPath {
+        switch shape {
+        case .star:
+            return star(radius: size.width * 0.72, innerRatio: 0.48)
+        case .round(let scale):
+            return openEye(size: CGSize(width: size.width * scale, height: size.height * scale), openness: openness)
+        case .happyArc, .closedArc, .spiral:
+            return openEye(size: size, openness: 0.12)
+        }
+    }
+
+    /// Kept for callers that draw both eyes the same: the arc for `.happy` or `.closed`.
+    static func eyeArc(_ style: PetPose.EyeStyle, size: CGSize) -> CGPath {
+        eyeStroke(style == .happy ? .happyArc : .closedArc, size: size)
     }
 
     static func eyeStrokeWidth(size: CGSize) -> CGFloat {
@@ -229,6 +288,25 @@ nonisolated enum PetGeometry {
             return MouthShapes(stroke: path)
         case .oh:
             return MouthShapes(fill: ellipse(center: .zero, size: CGSize(width: w * 0.42, height: w * 0.5)))
+        case .cat:
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: -w * 0.5, y: w * 0.06))
+            path.addQuadCurve(to: CGPoint(x: 0, y: w * 0.06), control: CGPoint(x: -w * 0.25, y: -w * 0.42))
+            path.addQuadCurve(to: CGPoint(x: w * 0.5, y: w * 0.06), control: CGPoint(x: w * 0.25, y: -w * 0.42))
+            return MouthShapes(stroke: path)
+        case .tongue:
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: -w / 2, y: w * 0.08))
+            path.addQuadCurve(to: CGPoint(x: w / 2, y: w * 0.08), control: CGPoint(x: 0, y: -w * 0.5))
+            let tongue = ellipse(center: CGPoint(x: w * 0.08, y: -w * 0.3), size: CGSize(width: w * 0.36, height: w * 0.34))
+            return MouthShapes(stroke: path, tongue: tongue)
+        case .yawn:
+            let fill = ellipse(center: CGPoint(x: 0, y: -w * 0.12), size: CGSize(width: w * 0.62, height: w * 0.86))
+            let tongue = ellipse(center: CGPoint(x: 0, y: -w * 0.4), size: CGSize(width: w * 0.36, height: w * 0.18))
+            return MouthShapes(fill: fill, tongue: tongue)
+        case .pout:
+            let path = CGPath(ellipseIn: CGRect(x: -w * 0.16, y: -w * 0.16, width: w * 0.32, height: w * 0.32), transform: nil)
+            return MouthShapes(stroke: path)
         }
     }
 
@@ -373,6 +451,59 @@ nonisolated enum PetGeometry {
             jewels.addEllipse(in: CGRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2))
         }
         return (band, jewels)
+    }
+
+    /// A pointed star, for star eyes.
+    static func star(radius r: CGFloat, points: Int = 5, innerRatio: CGFloat = 0.45) -> CGPath {
+        let path = CGMutablePath()
+        for index in 0..<(points * 2) {
+            let angle = Double(index) * .pi / Double(points) + .pi / 2
+            let radius = index.isMultiple(of: 2) ? r : r * innerRatio
+            let point = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+            index == 0 ? path.move(to: point) : path.addLine(to: point)
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    // MARK: Effects (local, centred; drawn above Mochi for a moment)
+
+    static func heart(size s: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 0, y: -s * 0.42))
+        path.addCurve(to: CGPoint(x: -s * 0.5, y: s * 0.14), control1: CGPoint(x: -s * 0.2, y: -s * 0.24), control2: CGPoint(x: -s * 0.5, y: -s * 0.12))
+        path.addCurve(to: CGPoint(x: 0, y: s * 0.22), control1: CGPoint(x: -s * 0.5, y: s * 0.44), control2: CGPoint(x: -s * 0.08, y: s * 0.46))
+        path.addCurve(to: CGPoint(x: s * 0.5, y: s * 0.14), control1: CGPoint(x: s * 0.08, y: s * 0.46), control2: CGPoint(x: s * 0.5, y: s * 0.44))
+        path.addCurve(to: CGPoint(x: 0, y: -s * 0.42), control1: CGPoint(x: s * 0.5, y: -s * 0.12), control2: CGPoint(x: s * 0.2, y: -s * 0.24))
+        path.closeSubpath()
+        return path
+    }
+
+    /// A little cloud, for sighs and sneezes.
+    static func puff(size s: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        for (x, y, r) in [(-0.22, 0.0, 0.26), (0.06, 0.1, 0.32), (0.3, -0.04, 0.24), (0.04, -0.14, 0.24)] as [(CGFloat, CGFloat, CGFloat)] {
+            path.addEllipse(in: CGRect(x: (x - r) * s, y: (y - r) * s, width: r * 2 * s, height: r * 2 * s))
+        }
+        return path
+    }
+
+    /// A glyph ("!", "?", "♪") as a centred path, from the rounded system font.
+    static func glyph(_ character: Character, size: CGFloat) -> CGPath {
+        let base = CTFontCreateUIFontForLanguage(.system, size, nil) ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        let bold = CTFontCreateCopyWithSymbolicTraits(base, size, nil, .traitBold, .traitBold) ?? base
+        // Characters the system font lacks (♪) come from a font that has them.
+        let text = String(character) as CFString
+        let font = CTFontCreateForString(bold, text, CFRange(location: 0, length: CFStringGetLength(text)))
+        let utf16 = Array(String(character).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+        guard CTFontGetGlyphsForCharacters(font, utf16, &glyphs, utf16.count),
+              let glyph = glyphs.first,
+              let path = CTFontCreatePathForGlyph(font, glyph, nil)
+        else { return CGMutablePath() }
+        let box = path.boundingBoxOfPath
+        var centre = CGAffineTransform(translationX: -box.midX, y: -box.midY)
+        return path.copy(using: &centre) ?? path
     }
 
     /// A four-pointed sparkle with curved sides.

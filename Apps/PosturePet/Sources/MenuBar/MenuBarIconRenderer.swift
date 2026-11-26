@@ -17,6 +17,8 @@ enum MenuBarIconRenderer {
         var stage: GrowthStage
         var sleeping: Bool
         var badge: Bool
+        /// −1, 0 or 1: where the eyes look (for the occasional glance).
+        var glance: Int
 
         init(pose: PetPose, badge: Bool) {
             uprightness = Int((clamp(pose.uprightness) * 10).rounded())
@@ -27,6 +29,7 @@ enum MenuBarIconRenderer {
             stage = pose.stage
             sleeping = pose.accessories.contains(.zzz)
             self.badge = badge && !sleeping
+            glance = pose.gaze.dx > 0.5 ? 1 : (pose.gaze.dx < -0.5 ? -1 : 0)
         }
 
         var pose: PetPose {
@@ -37,6 +40,7 @@ enum MenuBarIconRenderer {
             pose.eyeOpenness = Double(openness) / 4
             pose.leafDroop = Double(droop) / 4
             pose.stage = stage
+            pose.gaze = CGVector(dx: Double(glance), dy: 0)
             return pose
         }
     }
@@ -102,18 +106,17 @@ enum MenuBarIconRenderer {
         // Eyes cut out of the silhouette, a bit larger than life to stay legible.
         context.setBlendMode(.clear)
         let eyeSize = CGSize(width: layout.eyeSize.width * 1.45, height: layout.eyeSize.height * 1.35)
-        for center in layout.eyeCenters {
+        for (center, shape) in zip(layout.eyeCenters, PetGeometry.eyeShapes(for: pose.eyes)) {
             context.saveGState()
-            context.translateBy(x: center.x, y: center.y)
-            switch pose.eyes {
-            case .open:
-                context.addPath(PetGeometry.openEye(size: eyeSize, openness: max(0.3, pose.eyeOpenness)))
-                context.fillPath()
-            case .happy, .closed:
-                context.addPath(PetGeometry.eyeArc(pose.eyes, size: eyeSize))
+            context.translateBy(x: center.x + CGFloat(key.glance) * 0.6, y: center.y)
+            if shape.isStroked {
+                context.addPath(PetGeometry.eyeStroke(shape, size: eyeSize))
                 context.setLineWidth(1.1)
                 context.setLineCap(.round)
                 context.strokePath()
+            } else {
+                context.addPath(PetGeometry.eyeFill(shape, size: eyeSize, openness: max(0.3, pose.eyeOpenness)))
+                context.fillPath()
             }
             context.restoreGState()
         }

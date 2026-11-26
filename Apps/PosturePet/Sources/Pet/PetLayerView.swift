@@ -6,10 +6,22 @@ import QuartzCore
 /// Idle motion (breathing, blinking, leaf sway) runs as layer animations in
 /// the render server, so an always-visible Mochi costs almost no CPU. Pose
 /// changes spring from wherever the current animation is, so a stream of
-/// posture updates reads as smooth movement. Idle motion pauses while the
-/// window is hidden and respects Reduce Motion.
+/// posture updates reads as smooth movement.
+///
+/// On top of that Mochi performs acts (`PetAct`): short scripted moves with a
+/// temporary face and effects. Every 12–35 s it picks one that suits its mood
+/// by itself; reactions to events come from outside through `perform(_:)`.
+/// Everything pauses while the window is hidden and respects Reduce Motion.
 final class PetLayerView: NSView {
+    /// The pose from the engine (posture mirroring, mood). Acts lay a
+    /// temporary face over it without replacing it.
     private(set) var pose = PetPose()
+
+    /// The mood whose idle acts Mochi picks from.
+    var mood: PetMood = .happy
+
+    /// The act playing now, if any.
+    private(set) var currentAct: PetAct?
 
     /// Turn off for static renders (icons, snapshots).
     var idleAnimationsEnabled = true {
@@ -20,9 +32,12 @@ final class PetLayerView: NSView {
     // animations never fight over the same transform.
     private let canvas = CALayer()
     private let groundShadow = CAGradientLayer()
-    private let hopLayer = CALayer()      // reaction jumps and wobbles
+    private let hopLayer = CALayer()      // jumps, rocking, leaning, shivers
+    private let spinLayer = CALayer()     // rolls and turnarounds, around Mochi's middle
     private let squashLayer = CALayer()   // squash and stretch
     private let breathLayer = CALayer()   // idle breathing
+    /// Hearts, notes, "!", "?" and friends; above Mochi and not transformed.
+    private let effectsLayer = CALayer()
 
     private let sprout = CALayer()
     private let stem = CAShapeLayer()
@@ -58,6 +73,13 @@ final class PetLayerView: NSView {
     private let zees = [CAShapeLayer(), CAShapeLayer(), CAShapeLayer()]
 
     private var side: CGFloat = 0
+    /// What's on screen: `pose` with the current act's face laid over it.
+    private var renderedPose = PetPose()
+    private var faceOverlay: PetFace?
+    private var director = BehaviorDirector()
+    private var stillEffects = false
+    private var idleTimer: Timer?
+    private var actWork: [DispatchWorkItem] = []
     private var blinkTimer: Timer?
     private var isVisibleOnScreen = false
     private var reduceMotionObserver: NSObjectProtocol?
@@ -90,6 +112,8 @@ final class PetLayerView: NSView {
         // Views are released on the main thread.
         MainActor.assumeIsolated {
             blinkTimer?.invalidate()
+            idleTimer?.invalidate()
+            actWork.forEach { $0.cancel() }
             if let reduceMotionObserver {
                 NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
             }
@@ -106,55 +130,47 @@ final class PetLayerView: NSView {
 
     /// Moves Mochi to `pose`, springing there when `animated`.
     func apply(_ pose: PetPose, animated: Bool = true) {
-        let previous = self.pose
         self.pose = pose
         if side == 0 {
             layoutCanvas()
         }
         guard side > 0 else { return }
-        render(pose, previous: previous, animated: animated && window != nil)
+        refresh(animated: animated && window != nil)
     }
 
-    /// A happy jump with squash and stretch.
+    /// Performs an act now, replacing any act already playing.
+    func perform(_ act: PetAct) {
+        guard side > 0 else { return }
+        cancelAct()
+        let script = act.script
+        currentAct = act
+        for face in script.faces {
+            schedule(after: face.at) { [weak self] in self?.setFace(face.value) }
+        }
+        if !reduceMotion {
+            for (index, motion) in script.motions.enumerated() {
+                play(motion.value, delay: motion.at, key: "act.\(index)")
+            }
+        }
+        for effect in script.effects {
+            schedule(after: effect.at) { [weak self] in self?.emit(effect.value) }
+        }
+        schedule(after: script.duration) { [weak self] in
+            self?.currentAct = nil
+            self?.setFace(nil)
+        }
+    }
+
+    /// A quick hop (a desktop-pet click, for instance).
     func hop(height: CGFloat = 0.14) {
         guard side > 0, !reduceMotion else { return }
-        let jump = CAKeyframeAnimation(keyPath: "position.y")
-        jump.values = [0, 0, side * height, 0, 0]
-        jump.keyTimes = [0, 0.14, 0.5, 0.82, 1]
-        jump.timingFunctions = [
-            CAMediaTimingFunction(name: .linear), CAMediaTimingFunction(name: .easeOut),
-            CAMediaTimingFunction(name: .easeIn), CAMediaTimingFunction(name: .linear),
-        ]
-        jump.isAdditive = true
-        jump.duration = 0.62
-        hopLayer.add(jump, forKey: "hop")
-
-        squash(values: [1, 0.86, 1.1, 1.0, 0.84, 1.04, 1], keyTimes: [0, 0.14, 0.3, 0.6, 0.82, 0.92, 1], duration: 0.62)
+        play(.hop(height: Double(height), duration: 0.62), delay: 0, key: "hop")
     }
 
-    /// A small shiver, for feeling poorly.
-    func wobble() {
-        guard side > 0, !reduceMotion else { return }
-        let wobble = CAKeyframeAnimation(keyPath: "transform.rotation.z")
-        wobble.values = [0, 0.06, -0.05, 0.035, -0.02, 0]
-        wobble.duration = 0.8
-        wobble.isAdditive = true
-        hopLayer.add(wobble, forKey: "wobble")
-    }
-
-    /// Three quick chews, for eating a treat.
-    func chew() {
-        guard side > 0 else { return }
-        squash(values: [1, 0.93, 1, 0.93, 1, 0.93, 1], keyTimes: [0, 0.16, 0.33, 0.5, 0.66, 0.83, 1], duration: 0.9)
-    }
-
-    /// Two hops and a burst of sparkles.
-    func celebrate() {
-        hop(height: 0.16)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.66) { [weak self] in
-            self?.hop(height: 0.1)
-        }
-        flashSparkles()
+    /// Holds a face until `nil` (the desktop pet while it's being dragged).
+    func hold(_ face: PetFace?) {
+        cancelAct()
+        setFace(face)
     }
 
     // MARK: Layout
@@ -184,7 +200,8 @@ final class PetLayerView: NSView {
         CATransaction.commit()
         if newSide != side {
             side = newSide
-            render(pose, previous: pose, animated: false)
+            renderedPose = faceOverlay?.applied(to: pose) ?? pose
+            render(renderedPose, previous: renderedPose, animated: false)
             updateIdleAnimations()
         }
     }
@@ -216,7 +233,7 @@ final class PetLayerView: NSView {
     // MARK: Building
 
     private var allLayers: [CALayer] {
-        [canvas, groundShadow, hopLayer, squashLayer, breathLayer, sprout, stem, leaves, veins, bud, petals,
+        [canvas, groundShadow, hopLayer, spinLayer, squashLayer, breathLayer, effectsLayer, sprout, stem, leaves, veins, bud, petals,
          flowerCenter, bodyBase, bodyGlow, bodyShade, outline, highlight, mouth, mouthStroke, mouthFill,
          tongue, sweat, thermometer, thermometerStick, thermometerBulb, crownLayer, crownBand, crownJewels]
             + blushes + sparkles + zees + eyes.flatMap(\.all)
@@ -233,7 +250,8 @@ final class PetLayerView: NSView {
         canvas.addSublayer(groundShadow)
 
         canvas.addSublayer(hopLayer)
-        hopLayer.addSublayer(squashLayer)
+        hopLayer.addSublayer(spinLayer)
+        spinLayer.addSublayer(squashLayer)
         squashLayer.addSublayer(breathLayer)
 
         // The sprout sits behind the body so its stem grows out of the dome.
@@ -330,6 +348,7 @@ final class PetLayerView: NSView {
             z.lineJoin = .round
             canvas.addSublayer(z)
         }
+        canvas.addSublayer(effectsLayer)
     }
 
     // MARK: Rendering
@@ -347,6 +366,12 @@ final class PetLayerView: NSView {
             container.anchorPoint = pivot
             container.position = layout.pivot
         }
+        // Rolls and turns happen around Mochi's middle, not its base.
+        let middle = CGPoint(x: layout.centerX, y: layout.base + layout.bodyHeight * 0.5)
+        spinLayer.bounds = CGRect(x: 0, y: 0, width: s, height: s)
+        spinLayer.anchorPoint = CGPoint(x: middle.x / s, y: middle.y / s)
+        spinLayer.position = middle
+        effectsLayer.frame = CGRect(x: 0, y: 0, width: s, height: s)
 
         // Shadow follows the body's width; it doesn't tilt.
         set(groundShadow, \.bounds, CGRect(origin: .zero, size: layout.shadowRect.size), animated)
@@ -396,18 +421,32 @@ final class PetLayerView: NSView {
 
     private func renderEyes(_ pose: PetPose, previous: PetPose, layout: PetLayout, animated: Bool) {
         let size = layout.eyeSize
-        let isOpen = pose.eyes == .open
-        let openness = isOpen ? pose.eyeOpenness : 0
-        for (eye, center) in zip(eyes, layout.eyeCenters) {
+        let shapes = PetGeometry.eyeShapes(for: pose.eyes)
+        let previousShapes = PetGeometry.eyeShapes(for: previous.eyes)
+        for (index, (eye, center)) in zip(eyes, layout.eyeCenters).enumerated() {
+            let shape = shapes[index]
+            let sameShape = shape == previousShapes[index]
             set(eye.container, \.position, center, animated)
-            setPath(eye.iris, PetGeometry.openEye(size: size, openness: max(openness, 0.12)), animated)
-            setPath(eye.shine, PetGeometry.eyeHighlights(size: size, openness: openness, gaze: pose.gaze), animated)
-            eye.arc.path = PetGeometry.eyeArc(pose.eyes, size: size)
-            eye.arc.lineWidth = PetGeometry.eyeStrokeWidth(size: size)
 
-            setValue(eye.iris, keyPath: "opacity", to: Float(isOpen ? 1 : 0), animated: animated, spring: false, duration: 0.12)
-            setValue(eye.shine, keyPath: "opacity", to: Float(isOpen && openness > 0.3 ? 1 : 0), animated: animated, spring: false, duration: 0.12)
-            setValue(eye.arc, keyPath: "opacity", to: Float(isOpen ? 0 : 1), animated: animated, spring: false, duration: 0.12)
+            var showsShine = false
+            switch shape {
+            case .round(let scale):
+                let fill = PetGeometry.eyeFill(shape, size: size, openness: max(pose.eyeOpenness, 0.12))
+                sameShape ? setPath(eye.iris, fill, animated) : (eye.iris.path = fill)
+                let shineSize = CGSize(width: size.width * scale, height: size.height * scale)
+                let shine = PetGeometry.eyeHighlights(size: shineSize, openness: pose.eyeOpenness, gaze: pose.gaze)
+                sameShape ? setPath(eye.shine, shine, animated) : (eye.shine.path = shine)
+                showsShine = pose.eyeOpenness > 0.3
+            case .star:
+                eye.iris.path = PetGeometry.eyeFill(shape, size: size, openness: 1)
+            case .happyArc, .closedArc, .spiral:
+                eye.arc.path = PetGeometry.eyeStroke(shape, size: size)
+                eye.arc.lineWidth = PetGeometry.eyeStrokeWidth(size: size) * (shape == .spiral ? 0.5 : 1)
+            }
+            let filled = !shape.isStroked
+            setValue(eye.iris, keyPath: "opacity", to: Float(filled ? 1 : 0), animated: animated, spring: false, duration: 0.12)
+            setValue(eye.shine, keyPath: "opacity", to: Float(showsShine ? 1 : 0), animated: animated, spring: false, duration: 0.12)
+            setValue(eye.arc, keyPath: "opacity", to: Float(filled ? 0 : 1), animated: animated, spring: false, duration: 0.12)
         }
         if animated, pose.eyes != previous.eyes {
             // Changing expression reads best as a tiny blink.
@@ -548,8 +587,20 @@ final class PetLayerView: NSView {
         sprout.removeAnimation(forKey: "sway")
         blinkTimer?.invalidate()
         blinkTimer = nil
+        idleTimer?.invalidate()
+        idleTimer = nil
 
-        guard run else { return }
+        guard run else {
+            // Hidden mid-act: finish it now so it reappears in its own face.
+            if currentAct != nil {
+                cancelAct()
+                currentAct = nil
+                setFace(nil)
+            }
+            return
+        }
+        director.reduceMotion = reduceMotion
+        scheduleIdleAct()
         if !reduceMotion {
             let sleeping = pose.accessories.contains(.zzz)
             let breathe = CABasicAnimation(keyPath: "transform.scale.y")
@@ -581,7 +632,11 @@ final class PetLayerView: NSView {
         let timer = Timer(timeInterval: .random(in: 2.6...6.5), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.isVisibleOnScreen, self.idleAnimationsEnabled else { return }
-                if self.pose.eyes == .open {
+                let roundEyes = PetGeometry.eyeShapes(for: self.renderedPose.eyes).allSatisfy {
+                    if case .round = $0 { return true }
+                    return false
+                }
+                if roundEyes {
                     self.blink(duration: 0.18)
                     if Double.random(in: 0...1) < 0.18 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) { [weak self] in
@@ -661,7 +716,7 @@ final class PetLayerView: NSView {
         return group
     }
 
-    private func squash(values: [CGFloat], keyTimes: [NSNumber], duration: TimeInterval) {
+    private func squash(values: [CGFloat], keyTimes: [NSNumber], duration: TimeInterval, delay: TimeInterval = 0, key: String = "squash") {
         let y = CAKeyframeAnimation(keyPath: "transform.scale.y")
         y.values = values
         y.keyTimes = keyTimes
@@ -673,8 +728,292 @@ final class PetLayerView: NSView {
         group.animations = [x, y]
         group.duration = duration
         group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        squashLayer.add(group, forKey: "squash")
+        group.beginTime = CACurrentMediaTime() + delay
+        squashLayer.add(group, forKey: key)
     }
+
+    // MARK: Acts
+
+    private func refresh(animated: Bool) {
+        let effective = faceOverlay?.applied(to: pose) ?? pose
+        let previous = renderedPose
+        renderedPose = effective
+        render(effective, previous: previous, animated: animated)
+    }
+
+    private func setFace(_ face: PetFace?) {
+        guard face != faceOverlay else { return }
+        faceOverlay = face
+        guard side > 0 else { return }
+        refresh(animated: window != nil)
+    }
+
+    private func schedule(after delay: TimeInterval, _ work: @escaping @MainActor () -> Void) {
+        let item = DispatchWorkItem {
+            MainActor.assumeIsolated { work() }
+        }
+        actWork.append(item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    /// Stops the playing act's timers and motions (the face is reset by the caller).
+    private func cancelAct() {
+        actWork.forEach { $0.cancel() }
+        actWork = []
+        for layer in [hopLayer, spinLayer, squashLayer, sprout] {
+            for key in layer.animationKeys() ?? [] where key.hasPrefix("act.") {
+                layer.removeAnimation(forKey: key)
+            }
+        }
+        faceOverlay = nil
+    }
+
+    private func scheduleIdleAct() {
+        idleTimer?.invalidate()
+        let timer = Timer(timeInterval: director.nextIdleDelay(), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isVisibleOnScreen, self.idleAnimationsEnabled else { return }
+                if self.currentAct == nil, let act = self.director.pick(.idle(self.mood), now: CACurrentMediaTime()) {
+                    self.perform(act)
+                }
+                self.scheduleIdleAct()
+            }
+        }
+        timer.tolerance = 2
+        RunLoop.main.add(timer, forMode: .common)
+        idleTimer = timer
+    }
+
+    // MARK: Body motions
+
+    private func play(_ motion: BodyMotion, delay: TimeInterval, key: String) {
+        let s = side
+        func keyframes(_ layer: CALayer, _ path: String, _ values: [Any], times: [NSNumber]? = nil,
+                       duration: TimeInterval, additive: Bool = true, name: String = "") {
+            let animation = CAKeyframeAnimation(keyPath: path)
+            animation.values = values
+            animation.keyTimes = times
+            animation.duration = duration
+            animation.isAdditive = additive
+            animation.calculationMode = .linear
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            animation.beginTime = CACurrentMediaTime() + delay
+            animation.fillMode = .backwards
+            layer.add(animation, forKey: key + name)
+        }
+        func radians(_ degrees: Double) -> Double { -degrees * .pi / 180 }
+
+        switch motion {
+        case .hop(let height, let duration):
+            keyframes(hopLayer, "position.y", [0, 0, s * height, 0, 0], times: [0, 0.14, 0.5, 0.82, 1], duration: duration)
+            squash(values: [1, 0.86, 1.1, 1.0, 0.84, 1.04, 1], keyTimes: [0, 0.14, 0.3, 0.6, 0.82, 0.92, 1],
+                   duration: duration, delay: delay, key: key + ".squash")
+        case .rock(let angle, let swings, let duration):
+            var values: [Double] = [0]
+            for swing in 0..<swings {
+                let fade = 1 - 0.12 * Double(swing) / Double(max(1, swings))
+                values.append(radians(swing.isMultiple(of: 2) ? angle : -angle) * fade)
+            }
+            values.append(0)
+            keyframes(hopLayer, "transform.rotation.z", values, duration: duration)
+        case .shiver(let duration):
+            let count = max(4, Int(duration * 22))
+            let values = (0...count).map { $0 == 0 || $0 == count ? 0 : ($0.isMultiple(of: 2) ? 1 : -1) * s * 0.012 }
+            keyframes(hopLayer, "position.x", values, duration: duration)
+        case .roll(let duration):
+            keyframes(spinLayer, "transform.rotation.z", [0, -Double.pi, -2 * Double.pi], duration: duration)
+            keyframes(hopLayer, "position.y", [0, s * 0.07, 0], duration: duration, name: ".lift")
+        case .turn(let duration):
+            keyframes(spinLayer, "transform.scale.x", [1, 0.04, -1, -0.04, 1], times: [0, 0.25, 0.5, 0.75, 1],
+                      duration: duration, additive: false)
+        case .sink(let depth, let hold):
+            let total = 0.3 + hold + 0.35
+            let down = 0.3 / total
+            let up = (0.3 + hold) / total
+            squash(values: [1, 1 - depth, 1 - depth, 1.03, 1],
+                   keyTimes: [0, NSNumber(value: down), NSNumber(value: up), NSNumber(value: up + (1 - up) * 0.6), 1],
+                   duration: total, delay: delay, key: key + ".squash")
+        case .stretchTall(let amount, let hold):
+            let total = 0.3 + hold + 0.4
+            let rise = 0.3 / total
+            let fall = (0.3 + hold) / total
+            squash(values: [1, 1 + amount, 1 + amount, 0.96, 1],
+                   keyTimes: [0, NSNumber(value: rise), NSNumber(value: fall), NSNumber(value: fall + (1 - fall) * 0.6), 1],
+                   duration: total, delay: delay, key: key + ".squash")
+        case .nodOff(let duration):
+            squash(values: [1, 0.9, 0.9, 1.05, 1], keyTimes: [0, 0.75, 0.84, 0.9, 1], duration: duration, delay: delay, key: key + ".squash")
+            keyframes(hopLayer, "position.y", [0, 0, s * 0.035, 0], times: [0, 0.84, 0.9, 1], duration: duration)
+        case .chew:
+            squash(values: [1, 0.93, 1, 0.93, 1, 0.93, 1], keyTimes: [0, 0.16, 0.33, 0.5, 0.66, 0.83, 1],
+                   duration: 0.9, delay: delay, key: key + ".squash")
+        case .leafTwirl(let duration):
+            keyframes(sprout, "transform.rotation.z", [0, -Double.pi, -2 * Double.pi], duration: duration)
+        case .leafWave(let swings, let duration):
+            var values: [Double] = [0]
+            for swing in 0..<(swings * 2) {
+                values.append(swing.isMultiple(of: 2) ? 0.5 : -0.5)
+            }
+            values.append(0)
+            keyframes(sprout, "transform.rotation.z", values, duration: duration)
+        case .float(let height, let duration):
+            keyframes(hopLayer, "position.y", [0, s * height, s * height * 0.6, s * height, 0], duration: duration)
+        case .lean(let angle, let duration):
+            keyframes(hopLayer, "transform.rotation.z", [0, radians(angle), radians(angle), 0], times: [0, 0.3, 0.7, 1], duration: duration)
+        case .jolt:
+            keyframes(hopLayer, "position.y", [0, s * 0.04, 0], duration: 0.24)
+            squash(values: [1, 1.07, 0.95, 1], keyTimes: [0, 0.3, 0.7, 1], duration: 0.24, delay: delay, key: key + ".squash")
+        }
+    }
+
+    // MARK: Effects
+
+    private func emit(_ effect: PetEffect, still: Bool = false) {
+        guard side > 0 else { return }
+        stillEffects = still
+        let s = side
+        let layout = PetGeometry.layout(for: renderedPose, size: s)
+        let head = CGPoint(x: layout.crown.x, y: layout.crown.y)
+        let right = CGPoint(x: layout.centerX + layout.bodyWidth * 0.42, y: layout.base + layout.bodyHeight * 0.92)
+        let mouthSide = CGPoint(x: layout.mouthCenter.x + layout.bodyWidth * 0.3, y: layout.mouthCenter.y)
+
+        switch effect {
+        case .hearts:
+            for (index, dx) in [-0.16, 0.12, 0.34].enumerated() {
+                particle(PetGeometry.heart(size: s * [0.09, 0.07, 0.06][index]),
+                         fill: NSColor(hex: 0xFF6F91), at: CGPoint(x: head.x + s * dx, y: head.y - s * 0.02),
+                         rise: s * 0.16, drift: s * 0.03 * (index.isMultiple(of: 2) ? -1 : 1), delay: Double(index) * 0.18, lifetime: 1.2)
+            }
+        case .notes:
+            for index in 0..<2 {
+                particle(PetGeometry.glyph("♪", size: s * (index == 0 ? 0.11 : 0.09)),
+                         fill: NSColor(hex: 0x8E86E8), at: CGPoint(x: right.x + s * 0.04 * Double(index), y: right.y),
+                         rise: s * 0.14, drift: s * 0.06, delay: Double(index) * 0.35, lifetime: 1.3)
+            }
+        case .exclaim:
+            particle(PetGeometry.glyph("!", size: s * 0.16), fill: NSColor(hex: 0xFF7D6E),
+                     at: CGPoint(x: right.x + s * 0.02, y: right.y + s * 0.06), rise: s * 0.03, drift: 0, delay: 0, lifetime: 1.1, pop: true)
+        case .question:
+            particle(PetGeometry.glyph("?", size: s * 0.15), fill: NSColor(hex: 0x8E86E8),
+                     at: CGPoint(x: right.x + s * 0.02, y: right.y + s * 0.06), rise: s * 0.04, drift: s * 0.02, delay: 0, lifetime: 1.5, pop: true)
+        case .puff:
+            particle(PetGeometry.puff(size: s * 0.17), fill: NSColor(hex: 0xF4F1EE, alpha: 0.95), stroke: NSColor(hex: 0xE3DDD7),
+                     at: CGPoint(x: mouthSide.x + s * 0.03, y: mouthSide.y), rise: s * 0.03, drift: s * 0.12, delay: 0, lifetime: 1.2, grow: true)
+        case .sleepBubble:
+            let radius = s * 0.06
+            let bubble = CGPath(ellipseIn: CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2), transform: nil)
+            let bubbleCentre = CGPoint(x: mouthSide.x - s * 0.04, y: mouthSide.y)
+            particle(bubble, fill: NSColor(hex: 0xB8E4FF, alpha: 0.6), stroke: NSColor(hex: 0x8FCBF2, alpha: 0.9),
+                     at: bubbleCentre, rise: 0, drift: s * 0.02, delay: 0, lifetime: 2.4, grow: true)
+            let shine = CGPath(ellipseIn: CGRect(x: -radius * 0.28, y: -radius * 0.28, width: radius * 0.56, height: radius * 0.56), transform: nil)
+            particle(shine, fill: NSColor(white: 1, alpha: 0.9),
+                     at: CGPoint(x: bubbleCentre.x - radius * 0.35, y: bubbleCentre.y + radius * 0.35),
+                     rise: 0, drift: s * 0.02, delay: 0, lifetime: 2.4, grow: true)
+        case .sparkles:
+            if still {
+                sparkles.forEach { $0.opacity = 1 }
+            } else {
+                flashSparkles()
+            }
+        case .zzz:
+            for index in 0..<3 {
+                particle(PetGeometry.glyph("z", size: s * [0.07, 0.09, 0.11][index]), fill: NSColor(hex: 0x8E86E8),
+                         at: CGPoint(x: right.x + s * 0.03 * Double(index), y: right.y), rise: s * 0.15, drift: s * 0.05,
+                         delay: Double(index) * 0.3, lifetime: 1.3)
+            }
+        case .sweat:
+            particle(PetGeometry.sweatDrop(radius: s * 0.026), fill: Palette.sweat, stroke: NSColor(white: 1, alpha: 0.8),
+                     at: CGPoint(x: right.x - s * 0.02, y: right.y - s * 0.04), rise: -s * 0.05, drift: 0, delay: 0, lifetime: 1.2)
+        }
+    }
+
+    /// One short-lived shape that rises (or sinks), drifts and fades.
+    private func particle(
+        _ path: CGPath, fill: NSColor, stroke: NSColor? = nil, at point: CGPoint,
+        rise: CGFloat, drift: CGFloat, delay: TimeInterval, lifetime: TimeInterval,
+        pop: Bool = false, grow: Bool = false
+    ) {
+        let shape = CAShapeLayer()
+        shape.path = path
+        shape.fillColor = fill.cgColor
+        shape.strokeColor = stroke?.cgColor
+        shape.lineWidth = side * 0.006
+        shape.contentsScale = window?.backingScaleFactor ?? 2
+        shape.position = point
+        shape.opacity = 0
+        effectsLayer.addSublayer(shape)
+        if stillEffects {
+            // A still frame (debug contact sheet): halfway through, fully visible.
+            shape.position = CGPoint(x: point.x + drift * 0.5 + CGFloat(delay) * side * 0.04, y: point.y + rise * 0.5)
+            shape.opacity = 1
+            return
+        }
+
+        let move = CABasicAnimation(keyPath: "position")
+        move.fromValue = point
+        move.toValue = CGPoint(x: point.x + drift, y: point.y + rise)
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [0, 1, 1, 0]
+        fade.keyTimes = [0, 0.15, 0.7, 1]
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = grow ? [0.3, 0.9, 1.15] : (pop ? [0.2, 1.25, 1, 1] : [0.5, 1, 1])
+        let group = CAAnimationGroup()
+        group.animations = [move, fade, scale]
+        group.duration = lifetime
+        group.beginTime = CACurrentMediaTime() + delay
+        group.fillMode = .backwards
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        shape.add(group, forKey: "fx")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay + lifetime + 0.1) { [weak shape] in
+            shape?.removeFromSuperlayer()
+        }
+    }
+
+    #if DEBUG
+    /// Freezes an act at its key moment for the debug contact sheet: its
+    /// distinctive face, its effects mid-flight, and its main motion at its peak.
+    func debugStill(_ act: PetAct) {
+        guard side > 0 else { return }
+        let script = act.script
+        let face = script.faces.count > 1 && [.nodOff, .chomp].contains(act) ? script.faces[1].value : script.faces.first?.value
+        faceOverlay = face
+        refresh(animated: false)
+        for effect in script.effects {
+            emit(effect.value, still: true)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let s = side
+        for motion in script.motions.prefix(1).map(\.value) {
+            switch motion {
+            case .hop(let height, _), .float(let height, _):
+                hopLayer.setAffineTransform(CGAffineTransform(translationX: 0, y: s * height))
+            case .rock(let angle, _, _), .lean(let angle, _):
+                hopLayer.setAffineTransform(CGAffineTransform(rotationAngle: -angle * .pi / 180))
+            case .shiver:
+                hopLayer.setAffineTransform(CGAffineTransform(translationX: s * 0.012, y: 0))
+            case .roll:
+                spinLayer.setAffineTransform(CGAffineTransform(rotationAngle: -.pi / 2))
+            case .turn:
+                spinLayer.setAffineTransform(CGAffineTransform(scaleX: 0.35, y: 1))
+            case .sink(let depth, _):
+                squashLayer.setAffineTransform(CGAffineTransform(scaleX: 1 + depth * 0.7, y: 1 - depth))
+            case .stretchTall(let amount, _):
+                squashLayer.setAffineTransform(CGAffineTransform(scaleX: 1 - amount * 0.5, y: 1 + amount))
+            case .nodOff:
+                squashLayer.setAffineTransform(CGAffineTransform(scaleX: 1.06, y: 0.9))
+            case .chew:
+                squashLayer.setAffineTransform(CGAffineTransform(scaleX: 1.05, y: 0.93))
+            case .leafTwirl:
+                sprout.setAffineTransform(CGAffineTransform(rotationAngle: -.pi * 0.6))
+            case .leafWave:
+                sprout.setAffineTransform(CGAffineTransform(rotationAngle: 0.5))
+            case .jolt:
+                hopLayer.setAffineTransform(CGAffineTransform(translationX: 0, y: s * 0.04))
+            }
+        }
+        CATransaction.commit()
+    }
+    #endif
 
     // MARK: Animation helpers
 

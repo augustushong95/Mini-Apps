@@ -36,6 +36,8 @@ final class AirPodsDemo {
     @ObservationIgnored private var stepElapsed = 0.0
     @ObservationIgnored private var headClock: TimeInterval = 50_000
     @ObservationIgnored private var savedState: SavedState?
+    /// Acts seen during the reactions step.
+    @ObservationIgnored private var reactions: [PetAct] = []
 
     static let tick = 0.04
 
@@ -157,6 +159,39 @@ final class AirPodsDemo {
                 duration: 3, head: upright,
                 start: { model.openPanel(tab: .home) },
                 check: { engine.posture.state == .upright && engine.pose.uprightness >= 0.9 }
+            ),
+            ScriptStep(
+                title: "여러 가지 반응",
+                detail: "같은 상황이라도 매번 다른 동작을 합니다. 쓰다듬기, 먹이 주기, 축하, 자세 고침, 돌아옴, 아침 인사, 그리고 다섯 번 연속 쓰다듬으면 어지러워합니다.",
+                duration: 13, head: upright,
+                start: { [weak self] in
+                    guard let self else { return }
+                    reactions = []
+                    engine.addTreats(2)
+                    let script: [(Double, () -> Void)] = [
+                        (0.2, { engine.react(to: .tapped) }),
+                        (1.6, { engine.react(to: .tapped) }),
+                        (3.0, { engine.feed() }),
+                        (4.6, { engine.react(to: .celebrate) }),
+                        (6.2, { engine.react(to: .satUp) }),
+                        (7.8, { engine.react(to: .breakTaken) }),
+                        (9.4, { engine.react(to: .goodMorning) }),
+                        (11.0, { for _ in 0..<5 { engine.react(to: .tapped) } }),
+                    ]
+                    for (delay, action) in script {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, status == .running else { return }
+                            action()
+                            if let act = engine.reaction?.act { reactions.append(act) }
+                        }
+                    }
+                },
+                check: { [weak self] in
+                    guard let self else { return false }
+                    let distinct = Set(reactions).count
+                    let dizzy = BehaviorDirector.pool(for: .tappedALot).map(\.act).contains(reactions.last ?? .roll)
+                    return reactions.count == 8 && distinct >= 7 && dizzy
+                }
             ),
             ScriptStep(
                 title: "고개를 오른쪽으로 → Mochi도 오른쪽으로",

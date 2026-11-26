@@ -206,6 +206,94 @@ struct EngineTests {
         #expect(rig.nudges == [.windDown])
     }
 
+    // MARK: Reactions and lines
+
+    private func acts(for situation: PetSituation) -> Set<PetAct> {
+        Set(BehaviorDirector.pool(for: situation).map(\.act))
+    }
+
+    @Test func tapsGetDifferentReactionsAndFiveQuickTapsMakeMochiDizzy() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        var seen: [PetAct] = []
+        for _ in 0..<4 {
+            rig.engine.react(to: .tapped)
+            seen.append(rig.engine.reaction!.act)
+        }
+        #expect(Set(seen).count == 4, "No repeats in a row of taps")
+        #expect(seen.allSatisfy { acts(for: .tapped).contains($0) })
+        rig.engine.react(to: .tapped)
+        #expect(acts(for: .tappedALot).contains(rig.engine.reaction!.act), "The fifth quick tap")
+    }
+
+    @Test func eventsComeWithSomethingToSay() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        rig.engine.addTreats(1)
+        rig.engine.feed()
+        #expect(PetLines.pool(for: .fed).contains(rig.engine.line))
+        rig.engine.react(to: .celebrate)
+        #expect(PetLines.pool(for: .celebrate).contains(rig.engine.line))
+    }
+
+    @Test func moodLinesRotateWithTheMood() {
+        // A day already under way, so there's no good-morning line first.
+        let rig = TestRig { state in
+            state.withRecord(for: PetDay(containing: .now)) { $0.activeSeconds = 600 }
+        }
+        defer { rig.cleanUp() }
+        rig.engine.tick()
+        let hour = Calendar.current.component(.hour, from: .now)
+        #expect(PetLines.pool(for: .happy, hour: hour).contains(rig.engine.line))
+        rig.engine.debugAddSitting(minutes: 51)
+        #expect(PetLines.pool(for: .tired, hour: hour).contains(rig.engine.line), "A stiff line once stiff")
+    }
+
+    @Test func slumpingAndSittingBackUpGetReactions() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        rig.calibrate()
+        rig.hold(pitch: -26, seconds: 130)
+        #expect(acts(for: .slumpStarted).contains(rig.engine.reaction?.act ?? .roll))
+        rig.hold(pitch: 0, seconds: 8)
+        #expect(acts(for: .satUp).contains(rig.engine.reaction?.act ?? .roll))
+    }
+
+    @Test func airPodsComingAndGoingGetReactions() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        rig.putOnAirPods()
+        #expect(acts(for: .airPodsConnected).contains(rig.engine.reaction?.act ?? .roll))
+        rig.motion.debugStopSimulation()
+        #expect(acts(for: .airPodsDisconnected).contains(rig.engine.reaction?.act ?? .roll))
+    }
+
+    @Test func theFirstOpenOfTheDaySaysGoodMorning() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        rig.engine.tick()
+        #expect(acts(for: .goodMorning).contains(rig.engine.reaction?.act ?? .roll))
+        #expect(PetLines.pool(for: .goodMorning).contains(rig.engine.line))
+    }
+
+    @Test func welcomeBackWaitsUntilTheUserIsBack() {
+        let rig = TestRig()
+        defer { rig.cleanUp() }
+        rig.engine.tick()
+        rig.engine.debugAddSitting(minutes: 20)
+        // Away for 6 minutes: the break completes while nobody's looking.
+        rig.system.idleSeconds = 400
+        rig.engine.clock.advance(by: 360)
+        rig.engine.tick()
+        #expect(rig.engine.today.breaks == 1)
+        let whileAway = rig.engine.reaction
+        #expect(whileAway == nil || !acts(for: .breakTaken).contains(whileAway!.act))
+
+        rig.system.idleSeconds = 2
+        rig.engine.tick()
+        #expect(acts(for: .breakTaken).contains(rig.engine.reaction?.act ?? .roll), "Hello when back")
+    }
+
     // MARK: Treats, names, scores
 
     @Test func feedingUsesTreats() {
@@ -218,7 +306,7 @@ struct EngineTests {
         #expect(rig.engine.feed())
         #expect(rig.engine.pet.treats == 1)
         #expect(rig.engine.today.treatsFed == 1)
-        #expect(rig.engine.reaction?.kind == .chew)
+        #expect(acts(for: .fed).contains(rig.engine.reaction?.act ?? .roll), "One of the feeding acts")
     }
 
     @Test func namesAreTidied() {
@@ -304,6 +392,6 @@ struct EngineTests {
         #expect(rig.engine.today.day == PetDay(containing: .now).adding(days: 1))
         #expect(rig.engine.today.breaks == 0)
         #expect(rig.engine.pet.stage == .sprout, "A week with three cared days")
-        #expect(rig.engine.reaction?.kind == .celebrate)
+        #expect(acts(for: .grew).contains(rig.engine.reaction?.act ?? .roll), "A growth celebration")
     }
 }

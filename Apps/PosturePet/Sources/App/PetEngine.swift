@@ -50,6 +50,8 @@ final class PetEngine {
     private(set) var isPresent = true
     private(set) var isLate = false
     private(set) var reaction: PetReaction?
+    /// What Mochi is saying in the habitat's speech bubble.
+    private(set) var line = ""
     /// No baseline yet for the current screens (a new monitor, say).
     private(set) var needsRecenter = false
     private(set) var hasAnyBaseline = false
@@ -96,6 +98,15 @@ final class PetEngine {
     @ObservationIgnored private var timingActivity: NSObjectProtocol?
     @ObservationIgnored private var sleptSinceLastTick = false
     @ObservationIgnored private var lastTickAt: Date?
+    @ObservationIgnored private var director = BehaviorDirector()
+    @ObservationIgnored private var lines = PetLines.Rotator()
+    @ObservationIgnored private var lineMood: PetMood?
+    @ObservationIgnored private var lineChangedAt = Date.distantPast
+    @ObservationIgnored private var eventLineUntil: Date?
+    @ObservationIgnored private var tapTimes: [Date] = []
+    /// Greetings that wait until the user is back at the Mac.
+    @ObservationIgnored private var welcomeBackPending = false
+    @ObservationIgnored private var goodMorningPending = false
     @ObservationIgnored private let idleSeconds: @MainActor () -> TimeInterval
 
     static let tickInterval: TimeInterval = 5
@@ -136,6 +147,8 @@ final class PetEngine {
         subscriptions.append(motion.subscribe { [weak self] sample in self?.handle(sample) })
         subscriptions.append(motion.observeEvents { [weak self] event in self?.handle(event) })
         observeSystem()
+        // The first open of a pet day gets a good-morning once the user is here.
+        goodMorningPending = today.activeSeconds < 60
         recomputeDerived()
         timingActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
@@ -200,6 +213,8 @@ final class PetEngine {
         }
 
         recomputeDerived()
+        greetIfBack(idleSeconds: idle * clock.scale)
+        updateLine()
         evaluateNudges()
         // Motion access can be turned on or off in System Settings at any time.
         motion.refreshAuthorization()
@@ -218,8 +233,10 @@ final class PetEngine {
         let grew = PetBrain.evaluateGrowth(pet: &updated, days: store.state.days, today: day)
         pet = updated
         store.update { $0.pet = updated }
+        // Growing up is the morning's greeting when it happens.
+        goodMorningPending = !grew
         if grew {
-            reaction = PetReaction(kind: .celebrate)
+            react(to: .grew)
             onGrow?(updated.stage)
         }
     }
@@ -243,8 +260,9 @@ final class PetEngine {
         )
         let newMood = PetBrain.mood(inputs)
         if newMood != mood {
-            if newMood == .sick { reaction = PetReaction(kind: .wobble) }
+            if newMood == .sick { react(to: .feltSick) }
             mood = newMood
+            updateLine()
         }
         updatePose()
     }
@@ -284,13 +302,16 @@ final class PetEngine {
         switch event {
         case .becameDue:
             break
-        case .completed(_, let counted):
+        case .completed(let kind, let counted):
             if counted {
                 today.breaks += 1
             }
             store.update { $0.nudges.invitesThisCycle = 0 }
-            if mood == .sick || mood == .tired {
-                reaction = PetReaction(kind: .hop)
+            if kind == .away {
+                // The user isn't here to see it; say hello when they're back.
+                welcomeBackPending = counted
+            } else if kind == .manual {
+                react(to: .breakTaken)
             }
         }
     }
@@ -330,7 +351,7 @@ final class PetEngine {
         guard pet.treats > 0 else { return false }
         pet.treats -= 1
         today.treatsFed += 1
-        reaction = PetReaction(kind: .chew)
+        react(to: .fed)
         let pet = pet
         store.update { $0.pet = pet }
         recomputeDerived()
@@ -345,8 +366,62 @@ final class PetEngine {
         store.update { $0.bestScores[game] = score }
     }
 
-    func pet(react kind: PetReaction.Kind) {
-        reaction = PetReaction(kind: kind)
+    // MARK: Reactions and lines
+
+    /// Mochi reacts to something: the director picks one of several acts for
+    /// the situation (never the same as just before), every visible Mochi
+    /// plays it, and a matching line shows for a few seconds.
+    func react(to situation: PetSituation) {
+        var situation = situation
+        if situation == .tapped {
+            let now = Date.now
+            tapTimes = tapTimes.filter { now.timeIntervalSince($0) < 3 } + [now]
+            if tapTimes.count >= 5 {
+                situation = .tappedALot
+                tapTimes = []
+            }
+        }
+        director.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let act = director.pick(situation, now: Date.now.timeIntervalSinceReferenceDate) {
+            reaction = PetReaction(act: act)
+        }
+        if case .idle = situation {
+            return
+        }
+        say(lines.next(from: PetLines.pool(for: situation)), for: 6)
+    }
+
+    /// Shows `text` in the speech bubble for `seconds`, then back to mood lines.
+    private func say(_ text: String, for seconds: TimeInterval) {
+        line = text
+        eventLineUntil = Date.now.addingTimeInterval(seconds)
+        lineChangedAt = .now
+    }
+
+    /// A new mood line on a mood change or about every 90 seconds.
+    private func updateLine() {
+        let now = Date.now
+        if let until = eventLineUntil, until > now {
+            return
+        }
+        eventLineUntil = nil
+        guard mood != lineMood || now.timeIntervalSince(lineChangedAt) >= 90 || line.isEmpty else { return }
+        let hour = Calendar.current.component(.hour, from: clock.now)
+        line = lines.next(from: PetLines.pool(for: mood, hour: hour))
+        lineMood = mood
+        lineChangedAt = now
+    }
+
+    private func greetIfBack(idleSeconds: TimeInterval) {
+        guard isOnboarded, idleSeconds < 30 else { return }
+        if goodMorningPending, !isLate {
+            goodMorningPending = false
+            welcomeBackPending = false
+            react(to: .goodMorning)
+        } else if welcomeBackPending {
+            welcomeBackPending = false
+            react(to: .breakTaken)
+        }
     }
 
     func rename(to name: String) {
@@ -418,8 +493,14 @@ final class PetEngine {
         let stateChanged = reading.state != posture.state
         if stateChanged || sample.timestamp - lastPosturePublish >= 0.125 {
             lastPosturePublish = sample.timestamp
+            let wasSlouching = posture.state == .slouching
             posture = reading
             if stateChanged {
+                if reading.state == .slouching {
+                    react(to: .slumpStarted)
+                } else if wasSlouching, reading.state == .upright {
+                    react(to: .satUp)
+                }
                 updateMood()
             } else {
                 updatePose()
@@ -432,8 +513,15 @@ final class PetEngine {
         case .disconnected, .stalled, .stopped:
             classifier?.reset()
             posture = .unknown
+            if event == .disconnected, isOnboarded {
+                react(to: .airPodsDisconnected)
+            }
             updateMood()
-        case .connected, .started, .resumed, .error:
+        case .connected:
+            if isOnboarded {
+                react(to: .airPodsConnected)
+            }
+        case .started, .resumed, .error:
             break
         }
     }
