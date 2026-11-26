@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import MenuBarKit
 
 /// The Neck Arcade window: centred on the current screen, driven by the
 /// display's refresh, paused whenever it loses focus.

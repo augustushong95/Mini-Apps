@@ -64,15 +64,18 @@ struct ArcadeView: View {
         }
     }
 
+    /// The controls, only while playing (the countdown says them itself).
     private var footer: some View {
         HStack(spacing: 8) {
-            Image(systemName: session.usesHead ? "airpods" : "keyboard")
-                .foregroundStyle(Theme.accent)
-            Text(session.usesHead ? "\(session.game.headControl), or use \(session.game.keyControl)" : "Use \(session.game.keyControl) to play")
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Esc to pause")
-                .foregroundStyle(.tertiary)
+            if session.phase == .playing || isPaused {
+                Image(systemName: session.usesHead ? "airpods" : "keyboard")
+                    .foregroundStyle(Theme.accent)
+                Text(session.usesHead ? session.game.headControl : session.game.keyControl)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Esc: pause")
+                    .foregroundStyle(.tertiary)
+            }
         }
         .font(.rounded(11.5, .medium))
         .padding(.horizontal, 18)
@@ -170,13 +173,11 @@ private struct CountdownCard: View {
                 .foregroundStyle(Theme.accent)
                 .contentTransition(.numericText(countsDown: true))
                 .id(count)
-            Text(session.usesHead ? "Sit comfortably and look at the screen" : "Get ready")
+            Label(session.usesHead ? session.game.headControl : session.game.keyControl,
+                  systemImage: session.usesHead ? "airpods" : "keyboard")
                 .font(.petHeadline)
-            Text(session.usesHead ? session.game.headControl : "Use \(session.game.keyControl)")
-                .font(.petBody)
-                .foregroundStyle(.secondary)
             if session.usesHead, !engine.store.state.onboarding.safetyNoteShown {
-                Label("Move slowly and gently. Stop if anything hurts.", systemImage: "heart.text.square")
+                Label("Move gently. Stop if anything hurts.", systemImage: "heart.text.square")
                     .font(.petCaption)
                     .foregroundStyle(Color(Palette.coral))
                     .onDisappear {
@@ -245,9 +246,6 @@ private struct PausedCard: View {
                 .buttonStyle(.pill)
                 .keyboardShortcut(.defaultAction)
             }
-            Text("Space to resume")
-                .font(.petCaption)
-                .foregroundStyle(.tertiary)
         }
     }
 }
@@ -258,7 +256,7 @@ private struct ResultsCard: View {
     let result: GameResult
     let close: () -> Void
 
-    @State private var celebration = PetReaction(kind: .celebrate)
+    @State private var celebration = PetReaction(act: .cheer)
 
     private var pose: PetPose {
         var pose = PetMood.happy.pose(stage: engine.pet.stage, posture: nil)
@@ -290,15 +288,11 @@ private struct ResultsCard: View {
             Text(stretchLine)
                 .font(.petBody)
                 .foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                if result.countsAsBreak {
-                    InfoChip(text: "+1 break", symbol: "figure.cooldown", tint: Theme.accent)
-                }
-                if session.isNewBest {
-                    InfoChip(text: "New best!", symbol: "trophy.fill", tint: Color(Palette.sun))
-                } else if session.best > 0 {
-                    InfoChip(text: "Best \(session.best)", symbol: "trophy", tint: .secondary)
-                }
+            // At most one chip: a new best beats a counted break.
+            if session.isNewBest {
+                InfoChip(text: "New best!", symbol: "trophy.fill", tint: Color(Palette.sun))
+            } else if result.countsAsBreak {
+                InfoChip(text: "+1 break", symbol: "figure.cooldown", tint: Theme.accent)
             }
             HStack(spacing: 8) {
                 Button("Done", action: close)
@@ -319,6 +313,6 @@ private struct ResultsCard: View {
         if held > 0 {
             parts.append("\(held) s held")
         }
-        return "Your neck got " + parts.joined(separator: " · ")
+        return parts.joined(separator: " · ")
     }
 }

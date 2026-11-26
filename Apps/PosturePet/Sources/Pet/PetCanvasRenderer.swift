@@ -64,18 +64,19 @@ enum PetCanvasRenderer {
         }
 
         // Eyes.
-        for center in layout.eyeCenters {
+        for (center, shape) in zip(layout.eyeCenters, PetGeometry.eyeShapes(for: pose.eyes)) {
             var eye = ctx
             eye.translateBy(x: center.x, y: center.y)
-            switch pose.eyes {
-            case .open:
-                eye.fill(Path(PetGeometry.openEye(size: layout.eyeSize, openness: pose.eyeOpenness)), with: .color(Color(Palette.ink)))
-                if pose.eyeOpenness > 0.3 {
-                    eye.fill(Path(PetGeometry.eyeHighlights(size: layout.eyeSize, openness: pose.eyeOpenness, gaze: pose.gaze)), with: .color(.white))
+            if shape.isStroked {
+                let width = PetGeometry.eyeStrokeWidth(size: layout.eyeSize) * (shape == .spiral ? 0.5 : 1)
+                eye.stroke(Path(PetGeometry.eyeStroke(shape, size: layout.eyeSize)), with: .color(Color(Palette.ink)),
+                           style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+            } else {
+                eye.fill(Path(PetGeometry.eyeFill(shape, size: layout.eyeSize, openness: pose.eyeOpenness)), with: .color(Color(Palette.ink)))
+                if case .round(let scale) = shape, pose.eyeOpenness > 0.3 {
+                    let size = CGSize(width: layout.eyeSize.width * scale, height: layout.eyeSize.height * scale)
+                    eye.fill(Path(PetGeometry.eyeHighlights(size: size, openness: pose.eyeOpenness, gaze: pose.gaze)), with: .color(.white))
                 }
-            case .happy, .closed:
-                eye.stroke(Path(PetGeometry.eyeArc(pose.eyes, size: layout.eyeSize)), with: .color(Color(Palette.ink)),
-                           style: StrokeStyle(lineWidth: PetGeometry.eyeStrokeWidth(size: layout.eyeSize), lineCap: .round))
             }
         }
 

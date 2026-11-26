@@ -1,26 +1,17 @@
 import AppKit
 import SwiftUI
+import MenuBarKit
 
-/// A nudge Mochi says out loud.
+/// A nudge Mochi says out loud: one short line, picked from a few so it
+/// doesn't say the same thing every time.
 struct Nudge: Identifiable, Equatable {
     let kind: NudgeKind
-    let petName: String
+    let title: String
     let id = UUID()
 
-    var title: String {
-        switch kind {
-        case .breakInvite: "I'm stiff… play with me?"
-        case .posture: "My leaf is drooping. Sit up with me?"
-        case .windDown: "It's getting late. Call it a day?"
-        }
-    }
-
-    var detail: String {
-        switch kind {
-        case .breakInvite: "A 60-second game that stretches your neck."
-        case .posture: "Roll your shoulders back and lift your head."
-        case .windDown: "\(petName) is getting sleepy."
-        }
+    init(kind: NudgeKind, title: String? = nil) {
+        self.kind = kind
+        self.title = title ?? PetLines.bubbleTitles(for: kind)[0]
     }
 
     /// How long it stays before going away by itself.
@@ -154,19 +145,13 @@ struct BubbleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                PetView(pose: pose)
-                    .frame(width: 44, height: 44)
+            HStack(alignment: .center, spacing: 10) {
+                PetView(pose: pose, animatesIdle: false)
+                    .frame(width: 40, height: 40)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(nudge.title)
-                        .font(.rounded(13, .bold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(nudge.detail)
-                        .font(.rounded(11.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(nudge.title)
+                    .font(.rounded(14, .bold))
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Button {
                     action(.dismiss)
@@ -183,7 +168,7 @@ struct BubbleView: View {
             buttons
         }
         .padding(12)
-        .frame(width: 292)
+        .frame(width: 262)
         .background {
             SpeechBubbleShape(tail: tail)
                 .fill(.background)
@@ -219,10 +204,18 @@ struct BubbleView: View {
                 Button("Later") { action(.snooze) }
                     .buttonStyle(.pill(.plain))
                     .help("Ask again in 10 minutes")
-                Button("I took a break") { action(.tookBreak) }
-                    .buttonStyle(.pill(.plain))
+                Menu {
+                    Button("I took a break") { action(.tookBreak) }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 22, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("More")
             case .posture:
-                Button("Sitting up!") { action(.dismiss) }
+                Button("OK") { action(.dismiss) }
                     .buttonStyle(.pill(.soft, tint: Color(Palette.sky)))
             case .windDown:
                 Button("Good night") { action(.dismiss) }

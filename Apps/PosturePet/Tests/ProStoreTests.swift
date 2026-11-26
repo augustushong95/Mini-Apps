@@ -2,6 +2,7 @@ import Foundation
 import StoreKitTest
 import Testing
 @testable import PosturePet
+import MenuBarKit
 
 /// The Pro purchase, against Apple's local StoreKit test environment
 /// (`PosturePet.storekit`): no real money, no App Store account.
@@ -34,16 +35,16 @@ struct ProStoreTests {
 
         let suite = "PosturePetProTests-\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let pro = ProStore(debugDefaults: UserDefaults(suiteName: suite)!)
+        let pro = ProStore(productID: ProductIDs.pro, debugDefaults: UserDefaults(suiteName: suite)!)
 
         await pro.loadProduct()
-        #expect(pro.product?.id == ProStore.productID)
+        #expect(pro.product?.id == ProductIDs.pro)
         #expect(pro.priceText.contains("4.99"))
 
         await pro.refresh()
         #expect(!pro.isPro, "Free until bought")
 
-        let transaction = try await session.buyProduct(identifier: ProStore.productID)
+        let transaction = try await session.buyProduct(identifier: ProductIDs.pro)
         await pro.refresh()
         #expect(await eventually(pro) { pro.isPro }, "Unlocked by the purchase")
 

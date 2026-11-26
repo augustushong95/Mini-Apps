@@ -1,4 +1,5 @@
 import SwiftUI
+import MenuBarKit
 
 struct ArcadeListView: View {
     let engine: PetEngine
@@ -9,13 +10,8 @@ struct ArcadeListView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Neck Arcade")
-                        .font(.petTitle)
-                    Text("60-second games you steer with your head.")
-                        .font(.petBody)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Neck Arcade")
+                    .font(.petTitle)
 
                 ForEach(ArcadeGame.allCases) { game in
                     GameCard(
@@ -31,15 +27,10 @@ struct ArcadeListView: View {
                     }
                 }
 
-                Label(
-                    engine.motion.connection == .connected
-                        ? "Move gently. Stop if anything hurts."
-                        : "No AirPods? Every game works with the arrow keys.",
-                    systemImage: engine.motion.connection == .connected ? "heart.text.square" : "keyboard"
-                )
-                .font(.petCaption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
+                Label("Stop if anything hurts.", systemImage: "heart.text.square")
+                    .font(.petCaption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
             }
             .padding(14)
         }
@@ -47,6 +38,8 @@ struct ArcadeListView: View {
     }
 }
 
+/// A game: icon, name, best score, and a lock if it needs Pro. What it is
+/// and how to play show on hover (and on the game's own countdown).
 private struct GameCard: View {
     let game: ArcadeGame
     let best: Int?
@@ -69,37 +62,24 @@ private struct GameCard: View {
                         .rotationEffect(.degrees(hovering ? -8 : 0))
                 }
                 .frame(width: 58, height: 58)
-                .overlay(alignment: .topTrailing) {
-                    if locked {
-                        LockBadge().offset(x: 5, y: -5)
-                    }
-                }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(game.title)
-                        .font(.petHeadline)
-                    Text(game.tagline)
-                        .font(.rounded(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Label(game.stretch, systemImage: "figure.mind.and.body")
-                        Text("·")
-                        Text(game.keyControl)
-                    }
-                    .font(.rounded(10, .medium))
-                    .foregroundStyle(.tertiary)
-                }
+                Text(game.title)
+                    .font(.petHeadline)
                 Spacer(minLength: 4)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Image(systemName: locked ? "lock.fill" : "play.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundStyle(locked ? Color(Palette.sun) : Theme.accent)
-                    if let best, !locked {
-                        Text("Best \(best)")
-                            .font(.rounded(10, .semibold))
+                if locked {
+                    Label("Pro", systemImage: "lock.fill")
+                        .font(.rounded(11, .bold))
+                        .foregroundStyle(Color(Palette.sun))
+                } else {
+                    if let best {
+                        Label("\(best)", systemImage: "trophy.fill")
+                            .font(.rounded(12, .semibold))
                             .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(Theme.accent)
                 }
             }
             .card(padding: 10)
@@ -108,6 +88,7 @@ private struct GameCard: View {
         .onHover { inside in
             withAnimation(Theme.Motion.bouncy) { hovering = inside }
         }
+        .help("\(game.tagline) \(game.headControl), or \(game.keyControl).")
         .accessibilityLabel("\(game.title). \(game.tagline)\(locked ? " Requires Pro." : "")")
     }
 }

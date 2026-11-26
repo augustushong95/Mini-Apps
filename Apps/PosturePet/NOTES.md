@@ -12,7 +12,9 @@ v1 is feature-complete in code, apart from the AirPods device check below:
 - Pro purchase.
 - Onboarding.
 
-`make build` is clean, and `make test` passes 107 tests (114 cases with parameters). The whole suite passed three runs in a row.
+`make build` is clean and `make test` passes (133 Posture Pet test cases).
+
+**Behavior:** Mochi has 58 short acts (`Pet/PetAct.swift`). `Pet/BehaviorDirector.swift` picks one per situation by weighted random choice: it never repeats any of the last 3, respects cooldowns, and keeps to face-only acts under Reduce Motion. Idle acts play every 12–35 s while Mochi is visible. Event reactions go through `PetEngine.react(to:)`. Lines rotate from `Pet/PetLines.swift`. `-RenderSnapshots` draws a contact sheet of every act (`Debug/acts-light.png`).
 
 **Still open: the AirPods checklist.** It decides whether head tracking works for a menu bar app in the background. Until it's done, the sign conventions in `MotionAxes` (Sources/Sensing/HeadSample.swift) are assumed, not confirmed.
 

@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import SwiftUI
+import MenuBarKit
 
 enum PanelTab: String, CaseIterable, Identifiable {
     case home, today, arcade, settings
@@ -36,6 +37,8 @@ final class PanelRouter {
 /// What the panel can ask the app to do.
 struct PanelActions {
     var play: (ArcadeGame) -> Void
+    /// The same game the break bubble's Play would start.
+    var playSuggested: () -> Void
     var snooze: () -> Void
     var tookBreak: () -> Void
     var recenter: () -> Void
@@ -48,7 +51,7 @@ struct PanelRootView: View {
     @Bindable var router: PanelRouter
     let actions: PanelActions
 
-    static let size = NSSize(width: 360, height: 572)
+    static let size = NSSize(width: 360, height: 536)
 
     var body: some View {
         VStack(spacing: 0) {

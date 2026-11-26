@@ -118,13 +118,13 @@ private struct HelloStep: View {
     var body: some View {
         StepLayout(
             title: hatched ? "Hello! I'm your posture pet." : "Something's sprouting…",
-            subtitle: "I sit in your menu bar and mirror how you sit. Take breaks with me and I'll grow."
+            subtitle: "I mirror how you sit and grow when you take breaks."
         ) {
             PetView(pose: pose, reaction: reaction)
                 .frame(width: 170, height: 170)
                 .scaleEffect(hatched ? 1 : 0.55)
                 .rotationEffect(.degrees(hatched ? 0 : -6))
-                .onTapGesture { reaction = PetReaction(kind: .hop) }
+                .onTapGesture { reaction = PetReaction(act: .boing) }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 Text("What should I be called?")
@@ -146,7 +146,7 @@ private struct HelloStep: View {
         .task {
             try? await Task.sleep(for: .milliseconds(700))
             withAnimation(Theme.Motion.bouncy) { hatched = true }
-            reaction = PetReaction(kind: .celebrate)
+            reaction = PetReaction(act: .victoryHop)
         }
     }
 }
@@ -157,7 +157,7 @@ private struct AirPodsStep: View {
     var body: some View {
         StepLayout(
             title: "Mirror me with AirPods",
-            subtitle: "AirPods Pro, AirPods (3rd generation and later), AirPods Max and some Beats can sense head tilt. I use it to see how you sit and to steer games."
+            subtitle: "Your AirPods tell me how your head tilts."
         ) {
             ZStack {
                 Circle()
@@ -169,13 +169,11 @@ private struct AirPodsStep: View {
                     .symbolEffect(.pulse, isActive: model.waitingForMotion)
             }
         } content: {
-            VStack(spacing: 8) {
-                Label("Head movement stays on this Mac. Nothing is saved or sent.", systemImage: "lock.shield.fill")
-                Label("macOS will ask to allow Motion & Fitness access.", systemImage: "hand.raised.fill")
-            }
-            .font(.rounded(12))
-            .foregroundStyle(.secondary)
-            .labelStyle(TintedLabelStyle())
+            Label("Stays on this Mac. Never saved.", systemImage: "lock.shield.fill")
+                .font(.rounded(12))
+                .foregroundStyle(.secondary)
+                .labelStyle(TintedLabelStyle())
+                .help("Works with AirPods Pro, AirPods (3rd generation and later), AirPods Max and some Beats. macOS will ask to allow Motion & Fitness access.")
 
             if !model.motion.isSupported {
                 Text("This Mac can't read headphone motion. I'll use a break timer instead.")
@@ -223,16 +221,16 @@ private struct CalibrateStep: View {
 
     private var subtitle: String {
         if model.motion.authorization == .denied || model.motion.authorization == .restricted {
-            return "Motion access was declined. Skip for now; you can turn it on later in System Settings › Privacy & Security."
+            return "Motion access is off. You can turn it on later in System Settings."
         }
         return switch model.captureState {
         case .idle:
             model.waitingForMotion
-                ? "Put your AirPods in. I'll start mirroring you as soon as I can feel them."
-                : "Sit the way you normally do when you're sitting well, and look at the middle of your screen."
+                ? "Put your AirPods in."
+                : "Sit well and look at the middle of your screen."
         case .capturing: "Hold still for a moment…"
-        case .success: "Got it! That's your home position. I'll mirror you from here."
-        case .failed: "You moved a little. Settle in and try again."
+        case .success: "Got it! I'll mirror you from here."
+        case .failed: "You moved a little. Try again?"
         }
     }
 
@@ -291,7 +289,7 @@ private struct RhythmStep: View {
     var body: some View {
         StepLayout(
             title: "Our rhythm",
-            subtitle: "I'll get stiff after a while and ask you to play. In the evening I get sleepy and remind you to stop."
+            subtitle: "When to take breaks, and when to stop for the day."
         ) {
             Image(systemName: "clock.badge.checkmark.fill")
                 .font(.system(size: 60))
@@ -340,13 +338,13 @@ private struct HomeStep: View {
     var body: some View {
         StepLayout(
             title: "Where should I live?",
-            subtitle: "I'm always in the menu bar. I can also sit on your desktop, wherever you drag me."
+            subtitle: "I can also sit on your desktop, wherever you drag me."
         ) {
             EmptyView()
         } content: {
             HStack(spacing: 12) {
-                choice(desktop: false, title: "Menu bar", detail: "Tidy and tiny", symbol: "menubar.rectangle")
-                choice(desktop: true, title: "Menu bar + desktop", detail: "Drag me anywhere", symbol: "macwindow.on.rectangle")
+                choice(desktop: false, title: "Menu bar", symbol: "menubar.rectangle")
+                choice(desktop: true, title: "Menu bar + desktop", symbol: "macwindow.on.rectangle")
             }
             .padding(.top, 8)
         } buttons: {
@@ -358,7 +356,7 @@ private struct HomeStep: View {
         }
     }
 
-    private func choice(desktop: Bool, title: String, detail: String, symbol: String) -> some View {
+    private func choice(desktop: Bool, title: String, symbol: String) -> some View {
         let selected = model.wantsDesktopPet == desktop
         return Button {
             withAnimation(Theme.Motion.quick) { model.wantsDesktopPet = desktop }
@@ -375,10 +373,7 @@ private struct HomeStep: View {
                             .offset(x: 10, y: 6)
                     }
                 }
-                VStack(spacing: 2) {
-                    Text(title).font(.rounded(13, .semibold))
-                    Text(detail).font(.rounded(11)).foregroundStyle(.secondary)
-                }
+                Text(title).font(.rounded(13, .semibold))
             }
             .frame(width: 170, height: 150)
             .background {
@@ -397,12 +392,12 @@ private struct HomeStep: View {
 
 private struct FinishStep: View {
     @Bindable var model: OnboardingModel
-    @State private var reaction = PetReaction(kind: .celebrate)
+    @State private var reaction = PetReaction(act: .victoryHop)
 
     var body: some View {
         StepLayout(
             title: "We're all set!",
-            subtitle: "Today I'm just getting to know you, so I won't nag about posture until tomorrow. Click me in the menu bar any time."
+            subtitle: "Click me in the menu bar any time."
         ) {
             PetView(pose: {
                 var pose = PetMood.happy.pose(stage: model.engine.pet.stage, posture: nil)

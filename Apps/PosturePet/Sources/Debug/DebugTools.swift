@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import MenuBarKit
 
 /// Debug-only tools in the right-click menu, and launch arguments for
 /// driving the app from the command line.

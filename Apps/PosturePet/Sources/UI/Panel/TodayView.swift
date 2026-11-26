@@ -1,5 +1,6 @@
 import Charts
 import SwiftUI
+import MenuBarKit
 
 struct TodayView: View {
     let engine: PetEngine
@@ -7,6 +8,7 @@ struct TodayView: View {
     let router: PanelRouter
 
     @State private var range: HistoryRange = .week
+    @State private var hovered: PetDay?
 
     enum HistoryRange: String, CaseIterable, Identifiable {
         case week = "7 days"
@@ -18,27 +20,12 @@ struct TodayView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                header
                 summaryCard
                 historyCard
-                if let yesterday {
-                    yesterdayCard(yesterday)
-                }
             }
             .padding(14)
         }
         .scrollIndicators(.never)
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Today")
-                .font(.petTitle)
-            Spacer()
-            Text(engine.today.day.noon().formatted(.dateTime.weekday(.wide).month().day()))
-                .font(.petCaption)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private var summaryCard: some View {
@@ -51,20 +38,23 @@ struct TodayView: View {
                         .font(.rounded(28, .bold))
                         .monospacedDigit()
                         .contentTransition(.numericText())
-                    Text("happiness")
-                        .font(.rounded(10, .medium))
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color(Palette.coral))
                 }
             }
             .frame(width: 104, height: 104)
+            .help("Today's happiness, out of 100")
             .accessibilityElement(children: .combine)
+            .accessibilityLabel("Happiness \(engine.happiness)")
 
-            VStack(alignment: .leading, spacing: 9) {
-                summaryRow("figure.stand", Color(Palette.sky), "Sitting well", postureText(record))
-                summaryRow("figure.cooldown", Color(Palette.sun), "Breaks", "\(record.breaks) of \(PetBrain.breakGoal)+")
-                summaryRow("gamecontroller.fill", Color(Palette.lavender), "Games", "\(record.gamesPlayed)")
-                summaryRow("drop.fill", Color(Palette.sky), "Dewdrops", "+\(record.treatsEarned)")
-                summaryRow("flame.fill", Color(Palette.coral), "Streak", engine.streak == 1 ? "1 day" : "\(engine.streak) days")
+            VStack(alignment: .leading, spacing: 12) {
+                Text(engine.today.day.noon().formatted(.dateTime.weekday(.wide).month().day()))
+                    .font(.petCaption)
+                    .foregroundStyle(.secondary)
+                summaryRow("figure.stand", Color(Palette.sky), "Posture", postureText(record))
+                summaryRow("figure.cooldown", Color(Palette.sun), "Breaks", "\(record.breaks)/\(PetBrain.breakGoal)")
+                summaryRow("flame.fill", Color(Palette.coral), "Streak", "\(engine.streak)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,8 +62,8 @@ struct TodayView: View {
     }
 
     private func postureText(_ record: DayRecord) -> String {
-        guard let fraction = record.goodPostureFraction else { return "not measured" }
-        return "\(Duration.seconds(record.goodPostureSeconds).compact) · \(Int((fraction * 100).rounded()))%"
+        guard let fraction = record.goodPostureFraction else { return "–" }
+        return "\(Int((fraction * 100).rounded()))%"
     }
 
     private func summaryRow(_ symbol: String, _ tint: Color, _ title: String, _ value: String) -> some View {
@@ -97,6 +87,7 @@ struct TodayView: View {
     private struct Point: Identifiable {
         let day: PetDay
         let happiness: Int
+        let breaks: Int
         let isToday: Bool
         var id: PetDay { day }
         var date: Date { day.noon() }
@@ -108,12 +99,15 @@ struct TodayView: View {
         return (0..<range.days).reversed().map { offset in
             let day = today.adding(days: -offset)
             let happiness: Int
+            let breaks: Int
             if offset == 0 {
                 happiness = engine.happiness
+                breaks = engine.today.breaks
             } else {
                 happiness = byDay[day].flatMap { $0.activeSeconds > 0 ? $0.happiness : nil } ?? 0
+                breaks = byDay[day]?.breaks ?? 0
             }
-            return Point(day: day, happiness: happiness, isToday: offset == 0)
+            return Point(day: day, happiness: happiness, breaks: breaks, isToday: offset == 0)
         }
     }
 
@@ -144,14 +138,36 @@ struct TodayView: View {
                     x: .value("Day", point.date, unit: .day),
                     y: .value("Happiness", point.happiness)
                 )
-                .foregroundStyle(point.isToday ? Color(Palette.coral) : Color(Palette.coral).opacity(0.45))
+                .foregroundStyle(point.isToday || point.day == hovered ? Color(Palette.coral) : Color(Palette.coral).opacity(0.45))
                 .clipShape(RoundedRectangle(cornerRadius: range == .week ? 5 : 2, style: .continuous))
+                .annotation(position: .top, spacing: 4) {
+                    if point.day == hovered {
+                        Text("♥ \(point.happiness) · \(point.breaks) breaks")
+                            .font(.rounded(10, .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.thinMaterial, in: Capsule())
+                            .fixedSize()
+                    }
+                }
             }
-            .chartYScale(domain: 0...100)
-            .chartYAxis {
-                AxisMarks(values: [0, 50, 100]) { _ in
-                    AxisGridLine().foregroundStyle(.quaternary)
-                    AxisValueLabel().font(.rounded(9))
+            .chartYScale(domain: 0...115)
+            .chartYAxis(.hidden)
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                guard let plot = proxy.plotFrame else { return }
+                                let x = location.x - geometry[plot].origin.x
+                                if let date: Date = proxy.value(atX: x) {
+                                    hovered = PetDay(containing: date.addingTimeInterval(12 * 3600))
+                                }
+                            case .ended:
+                                hovered = nil
+                            }
+                        }
                 }
             }
             .chartXAxis {
@@ -165,39 +181,5 @@ struct TodayView: View {
             .accessibilityLabel("Happiness over the last \(range.days) days")
         }
         .card(padding: 14)
-    }
-
-    // MARK: Yesterday
-
-    private var yesterday: DayRecord? {
-        let day = engine.today.day.adding(days: -1)
-        return engine.store.state.record(for: day).flatMap { $0.activeSeconds >= 60 ? $0 : nil }
-    }
-
-    private func yesterdayCard(_ record: DayRecord) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "calendar")
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Yesterday with \(engine.pet.name)")
-                    .font(.rounded(12, .semibold))
-                Text(yesterdaySummary(record))
-                    .font(.rounded(11))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .card(padding: 12)
-    }
-
-    private func yesterdaySummary(_ record: DayRecord) -> String {
-        var parts = ["\(record.breaks) break\(record.breaks == 1 ? "" : "s")"]
-        if let fraction = record.goodPostureFraction {
-            parts.append("sat well \(Int((fraction * 100).rounded()))% of the time")
-        }
-        if let happiness = record.happiness {
-            parts.append("happiness \(happiness)")
-        }
-        return parts.joined(separator: " · ")
     }
 }

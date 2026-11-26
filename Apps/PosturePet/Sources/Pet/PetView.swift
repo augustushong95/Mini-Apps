@@ -1,13 +1,14 @@
 import SwiftUI
 
-/// A one-off Mochi animation, triggered by giving `PetView` a new value.
+/// A one-off act for Mochi to perform, triggered by giving `PetView` a new value.
 struct PetReaction: Equatable {
-    enum Kind {
-        case hop, celebrate, wobble, chew
-    }
-
-    let kind: Kind
+    let act: PetAct
     let id = UUID()
+    let createdAt = Date.now
+
+    /// Reactions are moments: a view that appears later doesn't replay an
+    /// old one.
+    var isFresh: Bool { Date.now.timeIntervalSince(createdAt) < 1.5 }
 
     static func == (lhs: PetReaction, rhs: PetReaction) -> Bool {
         lhs.id == rhs.id
@@ -18,11 +19,14 @@ struct PetReaction: Equatable {
 struct PetView: NSViewRepresentable {
     var pose: PetPose
     var reaction: PetReaction?
+    /// Which pool of idle acts Mochi picks from.
+    var mood: PetMood = .happy
     var animatesIdle = true
 
     func makeNSView(context: Context) -> PetLayerView {
         let view = PetLayerView()
         view.idleAnimationsEnabled = animatesIdle
+        view.mood = mood
         view.apply(pose, animated: false)
         view.setAccessibilityElement(true)
         view.setAccessibilityRole(.image)
@@ -33,16 +37,14 @@ struct PetView: NSViewRepresentable {
         if view.idleAnimationsEnabled != animatesIdle {
             view.idleAnimationsEnabled = animatesIdle
         }
+        view.mood = mood
         if view.pose != pose {
             view.apply(pose, animated: !context.transaction.disablesAnimations)
         }
         if let reaction, reaction != context.coordinator.lastReaction {
             context.coordinator.lastReaction = reaction
-            switch reaction.kind {
-            case .hop: view.hop()
-            case .celebrate: view.celebrate()
-            case .wobble: view.wobble()
-            case .chew: view.chew()
+            if reaction.isFresh {
+                view.perform(reaction.act)
             }
         }
     }
