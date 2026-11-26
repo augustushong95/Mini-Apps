@@ -1,0 +1,38 @@
+{
+  "identifier" : "8B2D4F61",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : true,
+      "internalID" : "6743209201",
+      "localizations" : [
+        {
+          "description" : "Unlimited redactions every day and your own rules for domains, words and patterns.",
+          "displayName" : "Screenshot Redactor Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "screenshotredactor.pro",
+      "referenceName" : "Screenshot Redactor Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

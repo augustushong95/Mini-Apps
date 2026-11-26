@@ -1,0 +1,52 @@
+# Shared XcodeGen spec for every app in Apps/.
+# Each Apps/<App>/project.yml includes this with `relativePaths: false`,
+# so every path below is relative to that app's own folder.
+
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+settings:
+  base:
+    # Set these once for all apps before the first App Store upload.
+    # Bundle IDs can't be changed after an app is registered in App Store Connect.
+    DEVELOPMENT_TEAM: ""
+    BUNDLE_ID_PREFIX: com.example.miniapps
+
+    SWIFT_VERSION: "6.0"
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  MenuBarKit:
+    path: ../../Packages/MenuBarKit
+
+targetTemplates:
+  MenuBarApp:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - Resources
+    dependencies:
+      - package: MenuBarKit
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).${target_name}
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ${target_name}.entitlements
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES # menu bar only, no Dock icon
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES

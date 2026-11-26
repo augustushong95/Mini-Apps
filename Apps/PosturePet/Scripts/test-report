@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Builds an HTML report of Posture Pet's latest test run and opens it.
+
+Usage (from the repo root): make test-report
+       or: Apps/PosturePet/Scripts/test-report [--no-open]
+
+It reads the newest .xcresult from `make test`, renders Mochi with simulated
+AirPods (the app's DEBUG `-RenderSnapshots` mode, run from a copy so a
+running app isn't disturbed), and writes .build/TestReport/index.html.
+"""
+
+import datetime
+import glob
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+BUILD = os.path.join(ROOT, ".build")
+OUT = os.path.join(BUILD, "TestReport")
+APP = os.path.join(BUILD, "DerivedData", "Build", "Products", "Debug", "Posture Pet.app")
+
+# Feature groups, in reading order, with what each suite checks.
+SUITES = [
+    ("EngineTests", "앱 엔진 · 시뮬레이션 AirPods",
+     "머리 움직임 → 자세 판정 → 기분 → Mochi 모습 → 통계 → 알림까지, 실제 앱의 흐름을 시뮬레이션 AirPods로 처음부터 끝까지 검사합니다."),
+    ("GameSessionTests", "Neck Arcade 진행",
+     "카운트다운, 일시정지, 결과, 휴식 인정, 그리고 시뮬레이션 머리로 하는 게임 조작과 범위 측정."),
+    ("ArcadeTests", "게임 규칙과 머리 조작 변환",
+     "세 게임의 규칙(결정적 진행, 60초, 점프, 간격)과 머리 각도를 게임 입력으로 바꾸는 규칙."),
+    ("PostureClassifierTests", "자세 판정",
+     "바른 자세 / 구부정 / 알 수 없음을 가르는 각도와 시간 규칙, 잠깐 숙임 무시, 끊김 처리."),
+    ("BreakSchedulerTests", "휴식 타이머",
+     "앉은 시간 계산, 자리 비움, Mac 잠자기, 시계 변경, 미루기, 지연된 타이머."),
+    ("NudgePolicyTests", "알림 규칙",
+     "언제 어떤 말풍선을 보여도 되는지: 간격, 횟수 제한, 조용 모드, 첫날, 밤."),
+    ("PetBrainTests", "기분 · 행복도 · 성장 · 연속 기록",
+     "Mochi의 규칙들과 하루 경계(04:00), 서머타임, 저장 데이터 형식."),
+    ("AppearanceTests", "Mochi 모습과 메뉴 막대 아이콘",
+     "기분별 표정, 자세 따라 하기, 모든 단계의 모양이 화면 안에 들어오는지, 아이콘."),
+    ("StorageAndSettingsTests", "저장 · 설정 · 조용 모드",
+     "데이터 저장과 복구, 손상된 파일 처리, 설정, 통화/전체 화면/수동 조용 모드, 자리에 있음 판단."),
+    ("ProStoreTests", "Pro 결제",
+     "Apple의 로컬 StoreKit 테스트 환경에서 구매하면 열리고 환불하면 잠기는지."),
+]
+
+GALLERY = [
+    ("panel-home-light.png", "Home"),
+    ("panel-home-due.png", "Home · 휴식할 때"),
+    ("panel-today-light.png", "Today"),
+    ("panel-arcade-light.png", "Arcade"),
+    ("panel-settings-dark.png", "Settings (다크)"),
+    ("panel-paywall.png", "Pro"),
+    ("bubble-breakInvite.png", "휴식 초대 말풍선"),
+    ("bubble-posture.png", "자세 알림 말풍선"),
+    ("arcade-leafGlide.png", "Leaf Glide"),
+    ("arcade-puddleHop.png", "Puddle Hop"),
+    ("arcade-starFloat.png", "Star Float"),
+    ("arcade-starFloat-results.png", "게임 결과"),
+    ("onboarding-0-hello.png", "처음 실행"),
+    ("moods-light.png", "기분 5가지"),
+    ("stages.png", "성장 단계"),
+    ("menubar-icons.png", "메뉴 막대 아이콘"),
+]
+
+
+def run(command):
+    return subprocess.run(command, capture_output=True, text=True)
+
+
+def latest_result():
+    results = glob.glob(os.path.join(BUILD, "DerivedData", "Logs", "Test", "*.xcresult"))
+    return max(results, key=os.path.getmtime) if results else None
+
+
+def debug_folder():
+    pattern = os.path.expanduser("~/Library/Containers/*PosturePet/Data/Library/Application Support/Debug")
+    folders = glob.glob(pattern)
+    return max(folders, key=os.path.getmtime) if folders else None
+
+
+def render_snapshots():
+    """Renders the snapshot PNGs from a copy of the debug app (never the copy a user may be running)."""
+    if not os.path.isdir(APP):
+        return False
+    copy_root = os.path.join(BUILD, "ReportApp")
+    shutil.rmtree(copy_root, ignore_errors=True)
+    os.makedirs(copy_root)
+    copy = os.path.join(copy_root, "Posture Pet.app")
+    shutil.copytree(APP, copy, symlinks=True)
+    binary = os.path.join(copy, "Contents", "MacOS", "Posture Pet")
+    print("Rendering Mochi with simulated AirPods…")
+    result = subprocess.run([binary, "-RenderSnapshots", "YES"], capture_output=True, timeout=300)
+    return result.returncode == 0
+
+
+def humanize(name):
+    name = re.sub(r"\(.*\)$", "", name)
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).lower()
+    return words[:1].upper() + words[1:]
+
+
+def collect_cases(node, suite=None, found=None):
+    found = found if found is not None else {}
+    kind = node.get("nodeType")
+    if kind == "Test Suite":
+        suite = node.get("name")
+    if kind == "Test Case":
+        messages = []
+        arguments = []
+
+        def walk(child):
+            for item in child.get("children", []):
+                if item.get("nodeType") in ("Failure Message", "Issue"):
+                    messages.append(item.get("name", ""))
+                if item.get("nodeType") == "Arguments":
+                    arguments.append((item.get("name", ""), item.get("result", "")))
+                walk(item)
+
+        walk(node)
+        found.setdefault(suite or "Other", []).append({
+            "name": node.get("name", ""),
+            "result": node.get("result", ""),
+            "duration": node.get("duration", ""),
+            "messages": messages,
+            "arguments": arguments,
+        })
+    for child in node.get("children", []):
+        collect_cases(child, suite, found)
+    return found
+
+
+def main():
+    os.makedirs(os.path.join(OUT, "img"), exist_ok=True)
+    result_path = latest_result()
+    if not result_path:
+        sys.exit("No test results yet. Run `make test` first.")
+
+    tests = json.loads(run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path", result_path]).stdout or "{}")
+    summary = json.loads(run(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result_path]).stdout or "{}")
+    cases = {}
+    for node in tests.get("testNodes", []):
+        collect_cases(node, found=cases)
+
+    if "--no-snapshots" not in sys.argv:
+        render_snapshots()
+    debug = debug_folder()
+
+    def copy_image(name):
+        if debug and os.path.exists(os.path.join(debug, name)):
+            shutil.copy(os.path.join(debug, name), os.path.join(OUT, "img", name))
+            return f"img/{name}"
+        return None
+
+    passed = summary.get("passedTests", sum(1 for s in cases.values() for c in s if c["result"] == "Passed"))
+    failed = summary.get("failedTests", sum(1 for s in cases.values() for c in s if c["result"] == "Failed"))
+    total = passed + failed + summary.get("skippedTests", 0)
+    device = (summary.get("devicesAndConfigurations") or [{}])[0].get("device", {})
+    when = datetime.datetime.fromtimestamp(os.path.getmtime(result_path)).strftime("%Y-%m-%d %H:%M")
+    ok = failed == 0
+
+    parts = []
+    parts.append(f"""
+<header>
+  <div class="badge {'ok' if ok else 'bad'}">{'✓' if ok else '✗'}</div>
+  <div>
+    <h1>Posture Pet 단위 테스트 보고서</h1>
+    <p class="meta">{html.escape(when)} · {html.escape(device.get('modelName', 'Mac'))} · macOS {html.escape(device.get('osVersion', ''))}</p>
+  </div>
+  <div class="score"><span class="big">{passed}</span><span class="of">/ {total}</span><span class="label">{'모두 통과' if ok else f'{failed}개 실패'}</span></div>
+</header>
+<p class="lead">AirPods 없이도 앱 전체를 검사할 수 있도록, 실제 AirPods와 같은 경로로 머리 움직임을 넣는 <b>시뮬레이션 AirPods</b>를 사용했습니다.
+테스트는 앱의 실제 데이터와 설정을 건드리지 않고, 매번 새 임시 폴더에서 실행됩니다.</p>
+""")
+
+    # Simulated AirPods frames.
+    frames_path = os.path.join(debug, "sim-frames.json") if debug else None
+    if frames_path and os.path.exists(frames_path):
+        frames = json.load(open(frames_path))
+        parts.append("<h2>시뮬레이션 AirPods로 본 Mochi</h2>"
+                     "<p class='sub'>실제 엔진에 머리 각도를 넣고, 그 순간 엔진이 판단한 값과 Mochi의 모습(왼쪽: 패널·데스크톱, 오른쪽: 메뉴 막대)을 찍었습니다.</p>"
+                     "<div class='frames'>")
+        for index, frame in enumerate(frames, 1):
+            src = copy_image(frame["file"])
+            posture = {"upright": "바른 자세", "slouching": "구부정", "unknown": "알 수 없음"}.get(frame["posture"], frame["posture"])
+            parts.append(f"""
+<figure class="frame">
+  {'<img src="' + src + '" alt="">' if src else ''}
+  <figcaption>
+    <b>{index}. {html.escape(frame['title'])}</b>
+    <span class="input">입력: {html.escape(frame['input'])}</span>
+    <span class="facts">자세 판정 <b>{html.escape(posture)}</b> · 기분 <b>{html.escape(frame['mood'])}</b> · 똑바름 {html.escape(frame['uprightness'])} · 기울기 {html.escape(frame['tilt'])}</span>
+  </figcaption>
+</figure>""")
+        parts.append("</div>")
+
+    # The in-app demo's latest result, if it has been run.
+    demo_path = os.path.join(debug, "AirPodsDemo.txt") if debug else None
+    if demo_path and os.path.exists(demo_path):
+        lines = [line for line in open(demo_path).read().splitlines() if line.strip()]
+        demo_when = datetime.datetime.fromtimestamp(os.path.getmtime(demo_path)).strftime("%Y-%m-%d %H:%M")
+        parts.append(f"<h2>앱 안 AirPods 데모 (마지막 실행 {html.escape(demo_when)})</h2>"
+                     "<p class='sub'>앱의 Debug 메뉴 › AirPods Simulation Demo… 로 직접 보면서 다시 실행할 수 있습니다.</p><ul class='demo'>")
+        for line in lines[:-1]:
+            passed_line = line.startswith("PASS")
+            text = re.sub(r"^(PASS|FAIL|SKIP)\s+", "", line)
+            parts.append(f"<li class='{'pass' if passed_line else 'fail'}'>{'✓' if passed_line else '✗'} {html.escape(text)}</li>")
+        parts.append(f"</ul><p class='sub'>{html.escape(lines[-1])}</p>")
+
+    # Every test, by feature.
+    parts.append("<h2>기능별 테스트</h2>")
+    ordered = [suite for suite, _, _ in SUITES] + sorted(set(cases) - {suite for suite, _, _ in SUITES})
+    for suite in ordered:
+        if suite not in cases:
+            continue
+        title, description = next(((t, d) for s, t, d in SUITES if s == suite), (suite, ""))
+        suite_cases = cases[suite]
+        suite_passed = sum(1 for c in suite_cases if c["result"] == "Passed")
+        parts.append(f"""
+<section class="suite">
+  <div class="suite-head">
+    <h3>{html.escape(title)}</h3>
+    <span class="count {'ok' if suite_passed == len(suite_cases) else 'bad'}">{suite_passed}/{len(suite_cases)}</span>
+  </div>
+  <p class="sub">{html.escape(description)}</p>
+  <ul class="cases">""")
+        for case in suite_cases:
+            good = case["result"] == "Passed"
+            extra = ""
+            if case["arguments"]:
+                extra = " <span class='args'>(" + ", ".join(html.escape(a) for a, _ in case["arguments"]) + ")</span>"
+            parts.append(f"<li class='{'pass' if good else 'fail'}'><span class='mark'>{'✓' if good else '✗'}</span>"
+                         f"<span class='name'>{html.escape(humanize(case['name']))}{extra}</span>"
+                         f"<span class='dur'>{html.escape(case['duration'])}</span></li>")
+            for message in case["messages"]:
+                parts.append(f"<li class='message'>{html.escape(message)}</li>")
+        parts.append("</ul></section>")
+
+    # Screens, for context.
+    shots = [(copy_image(name), label) for name, label in GALLERY]
+    shots = [(src, label) for src, label in shots if src]
+    if shots:
+        parts.append("<h2>화면 스냅샷</h2><p class='sub'>같은 실행에서 렌더링한 실제 화면입니다.</p><div class='gallery'>")
+        for src, label in shots:
+            parts.append(f"<figure><img src='{src}' alt=''><figcaption>{html.escape(label)}</figcaption></figure>")
+        parts.append("</div>")
+
+    page = f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Posture Pet 테스트 보고서</title>
+<style>
+  :root {{ --green:#3FAE6A; --red:#E5574A; --ink:#2B2522; --muted:#7A716C; --card:#fff; --bg:#F7F4EE; --line:#ECE6DD; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --ink:#F2EEE9; --muted:#A79F99; --card:#26262A; --bg:#1B1B1E; --line:#34343A; --green:#6BD48F; }} }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 -apple-system, "SF Pro Rounded", "Apple SD Gothic Neo", system-ui, sans-serif; }}
+  main {{ max-width:1060px; margin:0 auto; padding:40px 28px 80px; }}
+  header {{ display:flex; align-items:center; gap:18px; }}
+  .badge {{ width:56px; height:56px; border-radius:16px; display:grid; place-items:center; font-size:30px; color:#fff; flex:none; }}
+  .badge.ok {{ background:var(--green); }} .badge.bad {{ background:var(--red); }}
+  h1 {{ margin:0; font-size:26px; }} .meta {{ margin:2px 0 0; color:var(--muted); font-size:13px; }}
+  .score {{ margin-left:auto; text-align:right; }}
+  .score .big {{ font-size:40px; font-weight:800; }} .score .of {{ font-size:18px; color:var(--muted); margin-left:4px; }}
+  .score .label {{ display:block; font-size:13px; color:var(--muted); }}
+  .lead {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 18px; margin:22px 0 8px; }}
+  h2 {{ margin:38px 0 4px; font-size:20px; }} h3 {{ margin:0; font-size:16px; }}
+  .sub {{ color:var(--muted); margin:2px 0 14px; font-size:13.5px; }}
+  .frames {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:14px; }}
+  .frame {{ margin:0; background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }}
+  .frame img {{ width:100%; display:block; background:#FFF6EA; }}
+  .frame figcaption {{ padding:10px 14px 12px; display:flex; flex-direction:column; gap:2px; font-size:13px; }}
+  .frame .input {{ color:var(--muted); }} .frame .facts b {{ color:var(--green); }}
+  .demo, .cases {{ list-style:none; padding:0; margin:0; }}
+  .demo li {{ padding:5px 0; }} .demo li.pass {{ color:var(--green); }} .demo li.fail {{ color:var(--red); }}
+  .suite {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px 18px; margin:12px 0; }}
+  .suite-head {{ display:flex; align-items:center; justify-content:space-between; }}
+  .count {{ font-weight:700; font-size:13px; padding:2px 10px; border-radius:99px; }}
+  .count.ok {{ background:rgba(63,174,106,.14); color:var(--green); }} .count.bad {{ background:rgba(229,87,74,.14); color:var(--red); }}
+  .cases li {{ display:flex; gap:10px; align-items:baseline; padding:5px 0; border-top:1px solid var(--line); font-size:14px; }}
+  .cases li:first-child {{ border-top:0; }}
+  .mark {{ font-weight:800; width:14px; }} li.pass .mark {{ color:var(--green); }} li.fail .mark {{ color:var(--red); }}
+  .name {{ flex:1; }} .args {{ color:var(--muted); font-size:12.5px; }}
+  .dur {{ color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }}
+  .message {{ color:var(--red); font-family:ui-monospace, monospace; font-size:12px; padding-left:24px !important; }}
+  .gallery {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px; }}
+  .gallery figure {{ margin:0; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:10px; }}
+  .gallery img {{ width:100%; border-radius:8px; display:block; }}
+  .gallery figcaption {{ font-size:12.5px; color:var(--muted); margin-top:6px; text-align:center; }}
+</style></head>
+<body><main>{''.join(parts)}</main></body></html>"""
+
+    index = os.path.join(OUT, "index.html")
+    with open(index, "w") as handle:
+        handle.write(page)
+    print(f"Report: {index}  ({passed}/{total} passed)")
+    if "--no-open" not in sys.argv:
+        subprocess.run(["open", index])
+
+
+if __name__ == "__main__":
+    main()

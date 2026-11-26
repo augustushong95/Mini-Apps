@@ -1,0 +1,25 @@
+#!/bin/sh
+# Runs the repo's pinned XcodeGen, downloading it into .tools/ on first use.
+# Usage: Scripts/xcodegen generate --spec Apps/<App>/project.yml
+# To upgrade, change VERSION and SHA256 together (shasum -a 256 xcodegen.zip).
+set -eu
+
+VERSION="2.48.0"
+SHA256="620c9f0dc10849f94728ab5df52d225ebab8187439dd6fee1925e59e80dff892"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="$ROOT/.tools/xcodegen-$VERSION"
+BIN="$DEST/xcodegen/bin/xcodegen"
+
+if [ ! -x "$BIN" ]; then
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  echo "Downloading XcodeGen ${VERSION}..." >&2
+  curl -fsSL -o "$TMP/xcodegen.zip" \
+    "https://github.com/yonaskolb/XcodeGen/releases/download/$VERSION/xcodegen.zip"
+  echo "$SHA256  $TMP/xcodegen.zip" | shasum -a 256 -c - >/dev/null
+  mkdir -p "$DEST"
+  unzip -q "$TMP/xcodegen.zip" -d "$DEST"
+fi
+
+exec "$BIN" "$@"

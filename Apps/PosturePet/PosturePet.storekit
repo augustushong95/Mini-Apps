@@ -1,0 +1,38 @@
+{
+  "identifier" : "6F1C2E4A",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : true,
+      "internalID" : "6743209101",
+      "localizations" : [
+        {
+          "description" : "Every Neck Arcade game, your full history, and future pets.",
+          "displayName" : "Posture Pet Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "posturepet.pro",
+      "referenceName" : "Posture Pet Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
